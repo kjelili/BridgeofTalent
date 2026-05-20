@@ -370,15 +370,52 @@ export default function BridgeOfTalentApp() {
   useEffect(() => {
     let cancelled = false;
 
+    // Helper: fetch the freelancer row from the DB (if any) and merge it into
+    // local state so currentFreelancer resolves correctly. Without this, the
+    // dashboard shows "Loading..." forever because it looks up the freelancer
+    // in the in-memory seed array, which doesn't contain real Supabase users.
+    const hydrateFreelancer = async (profile) => {
+      if (!profile || profile.role !== "freelancer") return;
+      const { data, error } = await supabase
+        .from("freelancers")
+        .select("id, title, location, hourly_rate, rating, review_count, skills, verified_skills, bio, status, avatar, identity_verified, top_rated")
+        .eq("id", profile.id)
+        .maybeSingle();
+      if (error || !data || cancelled) return;
+      // Map DB snake_case to the app's camelCase shape used by the UI.
+      const merged = {
+        id: data.id,
+        name: profile.name,
+        email: profile.email,
+        title: data.title || "Freelancer",
+        location: data.location || "",
+        hourlyRate: Number(data.hourly_rate) || 50,
+        rating: Number(data.rating) || 0,
+        reviewCount: Number(data.review_count) || 0,
+        skills: data.skills || [],
+        verifiedSkills: data.verified_skills || [],
+        bio: data.bio || "",
+        status: data.status || "available",
+        avatar: data.avatar || (profile.name || "U").slice(0, 2).toUpperCase(),
+        identityVerified: !!data.identity_verified,
+        topRated: !!data.top_rated,
+        portfolio: [],
+      };
+      setFreelancers(prev => {
+        const without = prev.filter(f => f.id !== merged.id);
+        return [merged, ...without];
+      });
+    };
+
     (async () => {
       const { data: { session } } = await supabase.auth.getSession();
       if (cancelled || !session?.user) return;
       try {
         const profile = await fetchProfile(session.user.id);
-        if (!cancelled) setCurrentUser(profile);
+        if (cancelled) return;
+        setCurrentUser(profile);
+        await hydrateFreelancer(profile);
       } catch (e) {
-        // Profile row missing — rare (trigger should always create it) but
-        // don't get stuck in a half-logged-in state.
         // eslint-disable-next-line no-console
         console.warn("Profile lookup failed on session restore:", e?.message);
       }
@@ -390,6 +427,7 @@ export default function BridgeOfTalentApp() {
         try {
           const profile = await fetchProfile(session.user.id);
           setCurrentUser(profile);
+          await hydrateFreelancer(profile);
         } catch (e) {
           // eslint-disable-next-line no-console
           console.warn("Profile lookup failed:", e?.message);
