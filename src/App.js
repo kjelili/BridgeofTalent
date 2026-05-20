@@ -9,6 +9,7 @@ import {
   sanitizeProfileInput,
   LIMITS,
 } from "./utils/security";
+import { supabase, fetchProfile } from "./supabaseClient";
 
 // ============================================================================
 // DATA STORE (In-memory database simulation)
@@ -238,7 +239,11 @@ export default function BridgeOfTalentApp() {
   const [projects, setProjects] = useState(SEED_PROJECTS);
   const [selectedFreelancerId, setSelectedFreelancerId] = useState(null);
   const [selectedConversationId, setSelectedConversationId] = useState(null);
-  const [users, setUsers] = useState([
+  // NOTE (Supabase migration in progress): the seed array below is read by
+  // legacy parts of the UI (member name lookups, messages). It is no longer
+  // mutated — registration now goes through Supabase auth. The remaining reads
+  // will be replaced with DB queries in the next step of the migration.
+  const [users] = useState([
     { id: "c1", email: "alex@techcorp.com", password: "Password123", name: "Alex Thompson", role: "client", company: "TechCorp Inc." },
     { id: "c2", email: "maria@startup.io", password: "Password123", name: "Maria Garcia", role: "client", company: "Startup.io" },
     { id: "c3", email: "robert@datadriven.com", password: "Password123", name: "Robert Wilson", role: "client", company: "DataDriven Co." },
@@ -356,50 +361,126 @@ export default function BridgeOfTalentApp() {
     setSavedSearches(prev => prev.filter(s => s.id !== id));
   }, []);
 
-  const handleLogin = useCallback((email, password) => {
-    const user = users.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
-    if (user) {
-      setCurrentUser(user);
-      addToast(`Welcome back, ${user.name}!`, "success");
-      navigate(user.role === "freelancer" ? "dashboard" : "jobs");
-      return true;
-    }
-    addToast("Invalid email or password", "error");
-    return false;
-  }, [users, addToast, navigate]);
+  // ==========================================================================
+  // AUTH — real Supabase authentication (replaces the in-memory demo).
+  // ==========================================================================
 
-  const handleRegister = useCallback((data) => {
-    const email = sanitizeEmail(data?.email);
-    if (!email || users.find(u => u.email.toLowerCase() === email.toLowerCase())) {
-      addToast("Email already registered or invalid", "error");
+  // Restore an existing session on page load and react to login/logout events.
+  // Without this, refreshing the page logs the user out.
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (cancelled || !session?.user) return;
+      try {
+        const profile = await fetchProfile(session.user.id);
+        if (!cancelled) setCurrentUser(profile);
+      } catch (e) {
+        // Profile row missing — rare (trigger should always create it) but
+        // don't get stuck in a half-logged-in state.
+        // eslint-disable-next-line no-console
+        console.warn("Profile lookup failed on session restore:", e?.message);
+      }
+    })();
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        if (!session?.user) { setCurrentUser(null); return; }
+        try {
+          const profile = await fetchProfile(session.user.id);
+          setCurrentUser(profile);
+        } catch (e) {
+          // eslint-disable-next-line no-console
+          console.warn("Profile lookup failed:", e?.message);
+        }
+      }
+    );
+
+    return () => { cancelled = true; subscription?.unsubscribe(); };
+  }, []);
+
+  const handleLogin = useCallback(async (email, password) => {
+    const cleanEmail = sanitizeEmail(email);
+    if (!cleanEmail) { addToast("Invalid email", "error"); return false; }
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: cleanEmail,
+      password: password || "",
+    });
+    if (error || !data?.user) {
+      addToast(error?.message || "Invalid email or password", "error");
       return false;
     }
+    try {
+      const profile = await fetchProfile(data.user.id);
+      setCurrentUser(profile);
+      addToast(`Welcome back, ${profile.name}!`, "success");
+      navigate(profile.role === "freelancer" ? "dashboard" : "jobs");
+      return true;
+    } catch (e) {
+      addToast("Signed in, but profile is missing. Contact support.", "error");
+      return false;
+    }
+  }, [addToast, navigate]);
+
+  const handleRegister = useCallback(async (data) => {
+    const email = sanitizeEmail(data?.email);
+    if (!email) { addToast("Invalid email", "error"); return false; }
+
     const profile = sanitizeProfileInput(data);
     const role = data?.role === "client" ? "client" : "freelancer";
-    const newUser = {
-      id: generateId(), email, password: sanitizeString(data?.password || "", 128),
-      name: profile.name || "User", role, company: profile.company || ""
-    };
-    setUsers(prev => [...prev, newUser]);
+    const password = sanitizeString(data?.password || "", 128);
 
-    if (role === "freelancer") {
-      const newFreelancer = {
-        id: newUser.id, name: profile.name || "User", email, title: profile.title || "Freelancer",
-        location: profile.location || "", hourlyRate: profile.hourlyRate || 50, rating: 0, reviewCount: 0,
-        skills: profile.skills || [], bio: profile.bio || "", status: "available",
-        avatar: (profile.name || "U").split(" ").map(n => n[0]).join("").toUpperCase().slice(0, 2),
-        verifiedSkills: [], identityVerified: false, topRated: false, portfolio: []
-      };
-      setFreelancers(prev => [...prev, newFreelancer]);
+    // Supabase enforces minimum password length (default 6). Surface this
+    // before the API call so the error is friendly.
+    if (password.length < 8) {
+      addToast("Password must be at least 8 characters", "error");
+      return false;
     }
 
-    setCurrentUser(newUser);
-    addToast("Account created! Welcome to BridgeofTalent.", "success");
-    navigate(role === "freelancer" ? "dashboard" : "jobs");
-    return true;
-  }, [users, addToast, navigate]);
+    // The DB trigger `handle_new_user` reads name/role/company out of
+    // raw_user_meta_data and creates the matching profiles + freelancers rows.
+    const { data: signUpData, error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: {
+        data: {
+          name: profile.name || "User",
+          role,
+          company: profile.company || "",
+        },
+        emailRedirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+      },
+    });
 
-  const handleLogout = useCallback(() => {
+    if (error) {
+      addToast(error.message || "Registration failed", "error");
+      return false;
+    }
+
+    // If "Confirm email" is ON in Supabase, signUpData.session is null and the
+    // user must click the link in their inbox before they can log in.
+    if (!signUpData?.session) {
+      addToast("Account created! Check your email to confirm before signing in.", "success");
+      navigate("login");
+      return true;
+    }
+
+    // "Confirm email" OFF — they're logged in immediately. Populate profile.
+    try {
+      const me = await fetchProfile(signUpData.user.id);
+      setCurrentUser(me);
+      addToast("Account created! Welcome to BridgeofTalent.", "success");
+      navigate(me.role === "freelancer" ? "dashboard" : "jobs");
+    } catch (e) {
+      addToast("Account created — please sign in.", "success");
+      navigate("login");
+    }
+    return true;
+  }, [addToast, navigate]);
+
+  const handleLogout = useCallback(async () => {
+    await supabase.auth.signOut();
     setCurrentUser(null);
     navigate("landing");
     addToast("Logged out successfully", "info");
