@@ -445,11 +445,18 @@ export default function BridgeOfTalentApp() {
     // Defensive: nuke any stale session token in localStorage before signing
     // in. If a previous user's session is still here, the Supabase SDK tries
     // to log them out before logging the new user in -- and if that logout
-    // call fails (expired token, network), the whole auth flow wedges. Better
-    // to start every login from a clean slate.
+    // call fails or hangs (expired token, lock contention), the whole auth
+    // flow wedges. Better to start every login from a clean slate.
     const { data: { session: existingSession } } = await supabase.auth.getSession();
     if (existingSession) {
-      try { await supabase.auth.signOut(); } catch (_) { /* best-effort */ }
+      try {
+        await Promise.race([
+          supabase.auth.signOut(),
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("signOut timeout")), 2000)
+          ),
+        ]);
+      } catch (_) { /* best-effort */ }
     }
     clearLocalSupabaseSession();
 
@@ -546,11 +553,23 @@ export default function BridgeOfTalentApp() {
     // Best-effort server-side signOut. We DO NOT depend on this succeeding;
     // a failed logout (expired token, network glitch) must not strand the
     // user in a half-logged-in UI.
+    //
+    // We also race signOut against a 2s timeout. The @supabase/gotrue-js
+    // client uses an internal localStorage mutex; in some browser states
+    // signOut can hang indefinitely waiting on that lock (it neither
+    // resolves nor rejects), which would prevent the local cleanup below
+    // from ever running. The timeout means "if Supabase doesn't respond in
+    // 2s, give up and clean up locally anyway."
     try {
-      await supabase.auth.signOut();
+      await Promise.race([
+        supabase.auth.signOut(),
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("signOut timeout")), 2000)
+        ),
+      ]);
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.warn("supabase.auth.signOut() failed (ignored):", e?.message);
+      console.warn("supabase.auth.signOut() failed or timed out (ignored):", e?.message);
     }
     clearLocalSupabaseSession();
     setCurrentUser(null);
