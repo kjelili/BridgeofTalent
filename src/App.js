@@ -441,6 +441,18 @@ export default function BridgeOfTalentApp() {
   const handleLogin = useCallback(async (email, password) => {
     const cleanEmail = sanitizeEmail(email);
     if (!cleanEmail) { addToast("Invalid email", "error"); return false; }
+
+    // Defensive: nuke any stale session token in localStorage before signing
+    // in. If a previous user's session is still here, the Supabase SDK tries
+    // to log them out before logging the new user in -- and if that logout
+    // call fails (expired token, network), the whole auth flow wedges. Better
+    // to start every login from a clean slate.
+    const { data: { session: existingSession } } = await supabase.auth.getSession();
+    if (existingSession) {
+      try { await supabase.auth.signOut(); } catch (_) { /* best-effort */ }
+    }
+    clearLocalSupabaseSession();
+
     const { data, error } = await supabase.auth.signInWithPassword({
       email: cleanEmail,
       password: password || "",
@@ -517,8 +529,30 @@ export default function BridgeOfTalentApp() {
     return true;
   }, [addToast, navigate]);
 
+  // Helper: nuke ALL Supabase session state from localStorage. Used both as
+  // part of logout (defensive) and before a fresh login (to prevent the SDK
+  // from auto-calling logout on a stale prior session, which can fail and
+  // wedge the auth state). Lives outside handleLogout/handleLogin so both
+  // can use it identically.
+  const clearLocalSupabaseSession = () => {
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith("sb-"))
+        .forEach((k) => localStorage.removeItem(k));
+    } catch (_) { /* localStorage unavailable in private mode etc. */ }
+  };
+
   const handleLogout = useCallback(async () => {
-    await supabase.auth.signOut();
+    // Best-effort server-side signOut. We DO NOT depend on this succeeding;
+    // a failed logout (expired token, network glitch) must not strand the
+    // user in a half-logged-in UI.
+    try {
+      await supabase.auth.signOut();
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("supabase.auth.signOut() failed (ignored):", e?.message);
+    }
+    clearLocalSupabaseSession();
     setCurrentUser(null);
     navigate("landing");
     addToast("Logged out successfully", "info");
