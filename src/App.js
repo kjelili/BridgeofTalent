@@ -443,21 +443,11 @@ export default function BridgeOfTalentApp() {
     if (!cleanEmail) { addToast("Invalid email", "error"); return false; }
 
     // Defensive: nuke any stale session token in localStorage before signing
-    // in. If a previous user's session is still here, the Supabase SDK tries
-    // to log them out before logging the new user in -- and if that logout
-    // call fails or hangs (expired token, lock contention), the whole auth
-    // flow wedges. Better to start every login from a clean slate.
-    const { data: { session: existingSession } } = await supabase.auth.getSession();
-    if (existingSession) {
-      try {
-        await Promise.race([
-          supabase.auth.signOut(),
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("signOut timeout")), 2000)
-          ),
-        ]);
-      } catch (_) { /* best-effort */ }
-    }
+    // in. We deliberately do NOT call getSession() or signOut() here -- both
+    // touch @supabase/gotrue-js's internal localStorage mutex, and if a prior
+    // operation left that mutex in a degenerate state, the whole login flow
+    // would hang. Wiping the sb-* keys directly achieves the same end-state
+    // (no prior session) without any lock contention.
     clearLocalSupabaseSession();
 
     const { data, error } = await supabase.auth.signInWithPassword({
