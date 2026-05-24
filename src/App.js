@@ -233,7 +233,32 @@ body { font-family: var(--font-sans); color: var(--gray-700); background: var(--
 export default function BridgeOfTalentApp() {
   // Global state
   const [currentUser, setCurrentUser] = useState(null);
-  const [page, setPage] = useState("landing");
+  // Persisted page state. React state alone resets on refresh, which sent
+  // logged-in users back to the landing page even though their session was
+  // restored. localStorage gives us a tiny "remember last page" without
+  // pulling in react-router.
+  const PAGE_STORAGE_KEY = "bridgeoftalent-current-page";
+  const RESTORABLE_PAGES = new Set([
+    "dashboard", "jobs", "freelancers", "saved", "messages",
+    "projects", "about", "profile",
+  ]);
+  const [page, setPage] = useState(() => {
+    try {
+      const saved = localStorage.getItem(PAGE_STORAGE_KEY);
+      return saved && RESTORABLE_PAGES.has(saved) ? saved : "landing";
+    } catch (_) { return "landing"; }
+  });
+  // Mirror page changes to localStorage. Only persist "restorable" pages.
+  useEffect(() => {
+    try {
+      if (RESTORABLE_PAGES.has(page)) {
+        localStorage.setItem(PAGE_STORAGE_KEY, page);
+      } else {
+        localStorage.removeItem(PAGE_STORAGE_KEY);
+      }
+    } catch (_) { /* localStorage unavailable */ }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
   const [freelancers, setFreelancers] = useState(SEED_FREELANCERS);
   const [jobs, setJobs] = useState(SEED_JOBS);
   const [projects, setProjects] = useState(SEED_PROJECTS);
@@ -437,7 +462,19 @@ export default function BridgeOfTalentApp() {
 
     return () => { cancelled = true; subscription?.unsubscribe(); };
   }, []);
-
+	// Session-aware page guard. If a logged-out user has a stale persisted
+	// page (e.g. "dashboard") from a previous session, bump them to landing
+	// after the session-restore window. Without this they'd briefly see a
+	// broken dashboard rendering for null currentUser.
+	useEffect(() => {
+	  const t = setTimeout(() => {
+        if (!currentUser && RESTORABLE_PAGES.has(page)) {
+          setPage("landing");
+      }
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const handleLogin = useCallback(async (email, password) => {
     const cleanEmail = sanitizeEmail(email);
     if (!cleanEmail) { addToast("Invalid email", "error"); return false; }
@@ -562,6 +599,7 @@ export default function BridgeOfTalentApp() {
       console.warn("supabase.auth.signOut() failed or timed out (ignored):", e?.message);
     }
     clearLocalSupabaseSession();
+    try { localStorage.removeItem(PAGE_STORAGE_KEY); } catch (_) { /* ignore */ }
     setCurrentUser(null);
     navigate("landing");
     addToast("Logged out successfully", "info");
