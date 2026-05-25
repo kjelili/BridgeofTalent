@@ -60,14 +60,11 @@ const CATEGORIES = [
   "DevOps", "Marketing", "Writing", "Blockchain", "AI/ML", "Other"
 ];
 
-const SEED_FREELANCERS = [
-  { id: "f1", name: "Sarah Chen", email: "sarah@example.com", title: "Full Stack Developer", location: "San Francisco, CA", hourlyRate: 75, rating: 4.9, reviewCount: 47, skills: ["React", "Node.js", "AWS", "Python", "TypeScript"], bio: "Experienced full stack developer with 8+ years building scalable web applications. Specialized in React ecosystems and cloud architecture.", status: "available", avatar: "SC", verifiedSkills: ["React", "Node.js", "AWS"], identityVerified: true, topRated: true, portfolio: [{ id: "p1", title: "E-commerce Platform", description: "Full-stack marketplace with React & Node", link: "#", imageUrl: null }, { id: "p2", title: "SaaS Dashboard", description: "Analytics dashboard for B2B product", link: "#", imageUrl: null }] },
-  { id: "f2", name: "John Martinez", email: "john@example.com", title: "Cloud Infrastructure Specialist", location: "Austin, TX", hourlyRate: 90, rating: 4.8, reviewCount: 32, skills: ["AWS", "Docker", "Kubernetes", "Terraform", "DevOps"], bio: "Cloud architect helping companies scale efficiently with modern infrastructure.", status: "busy", avatar: "JM", verifiedSkills: ["AWS", "Kubernetes"], identityVerified: true, topRated: false, portfolio: [{ id: "p3", title: "Cloud Migration", description: "Legacy to AWS migration for enterprise", link: "#", imageUrl: null }] },
-  { id: "f3", name: "Emily Johnson", email: "emily@example.com", title: "UI/UX Designer", location: "New York, NY", hourlyRate: 65, rating: 4.7, reviewCount: 28, skills: ["Figma", "UI/UX Design", "React", "CSS"], bio: "Creative designer focused on user-centered design and modern interfaces.", status: "available", avatar: "EJ", verifiedSkills: ["Figma"], identityVerified: true, topRated: true, portfolio: [] },
-  { id: "f4", name: "Michael Brown", email: "michael@example.com", title: "Data Scientist", location: "Seattle, WA", hourlyRate: 85, rating: 4.9, reviewCount: 41, skills: ["Python", "Machine Learning", "TensorFlow", "SQL"], bio: "Data scientist turning complex data into actionable business insights.", status: "available", avatar: "MB", verifiedSkills: ["Python", "Machine Learning"], identityVerified: false, topRated: true, portfolio: [] },
-  { id: "f5", name: "Lisa Wang", email: "lisa@example.com", title: "Digital Marketing Expert", location: "Los Angeles, CA", hourlyRate: 55, rating: 4.6, reviewCount: 35, skills: ["SEO", "Content Marketing", "Google Ads"], bio: "Marketing expert helping businesses grow through digital channels.", status: "available", avatar: "LW", verifiedSkills: [], identityVerified: false, topRated: false, portfolio: [] },
-  { id: "f6", name: "David Kim", email: "david@example.com", title: "Mobile App Developer", location: "Boston, MA", hourlyRate: 70, rating: 4.8, reviewCount: 39, skills: ["React Native", "Flutter", "Swift", "TypeScript"], bio: "Mobile developer building polished cross-platform apps.", status: "available", avatar: "DK", verifiedSkills: ["React Native"], identityVerified: true, topRated: false, portfolio: [] },
-];
+// NOTE: SEED_FREELANCERS used to live here as a hard-coded in-memory array of
+// six demo freelancers. Removed -- freelancers now load from the
+// `public.freelancers` table in Supabase via the fetch effect in App below.
+// The same six demos were inserted into the DB via migration 0002, so the
+// listing looks identical.
 
 const SEED_JOBS = [
   { id: "j1", clientId: "c1", clientName: "TechCorp Inc.", title: "Full Stack Developer for E-commerce Platform", description: "We need an experienced full stack developer to build a modern e-commerce platform with React frontend and Node.js backend. Must have experience with payment integrations and cloud deployment.", skills: ["React", "Node.js", "AWS", "MongoDB"], budgetMin: 5000, budgetMax: 8000, budgetType: "fixed", category: "Web Development", location: "Remote", status: "open", createdAt: Date.now() - 86400000 * 3, deadline: Date.now() + 86400000 * 45, bids: [{ id: "b1", freelancerId: "f1", freelancerName: "Sarah Chen", amount: 6500, message: "I have 8+ years building e-commerce platforms.", timeline: "6 weeks", createdAt: Date.now() - 86400000 * 2, status: "pending" }], teamSize: 1 },
@@ -207,6 +204,7 @@ body { font-family: var(--font-sans); color: var(--gray-700); background: var(--
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 @keyframes slideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: translateX(0); } }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@keyframes skeleton-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 @keyframes shimmer { 0% { background-position: -200% 0; } 100% { background-position: 200% 0; } }
 @keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 
@@ -259,20 +257,21 @@ export default function BridgeOfTalentApp() {
     } catch (_) { /* localStorage unavailable */ }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
-  const [freelancers, setFreelancers] = useState(SEED_FREELANCERS);
+  const [freelancers, setFreelancers] = useState([]);
+  const [freelancersLoading, setFreelancersLoading] = useState(true);
   const [jobs, setJobs] = useState(SEED_JOBS);
   const [projects, setProjects] = useState(SEED_PROJECTS);
   const [selectedFreelancerId, setSelectedFreelancerId] = useState(null);
   const [selectedConversationId, setSelectedConversationId] = useState(null);
-  // NOTE (Supabase migration in progress): the seed array below is read by
-  // legacy parts of the UI (member name lookups, messages). It is no longer
-  // mutated — registration now goes through Supabase auth. The remaining reads
-  // will be replaced with DB queries in the next step of the migration.
+  // NOTE: this array now holds only the seeded demo CLIENTS used by legacy
+  // parts of the UI (jobs, notifications) until they migrate to Supabase. The
+  // freelancer entries were removed when Find Talent moved to a DB-backed
+  // fetch -- name lookups for freelancers should use the `freelancers` state
+  // (which is populated from the Supabase `freelancers` table).
   const [users] = useState([
     { id: "c1", email: "alex@techcorp.com", password: "Password123", name: "Alex Thompson", role: "client", company: "TechCorp Inc." },
     { id: "c2", email: "maria@startup.io", password: "Password123", name: "Maria Garcia", role: "client", company: "Startup.io" },
     { id: "c3", email: "robert@datadriven.com", password: "Password123", name: "Robert Wilson", role: "client", company: "DataDriven Co." },
-    ...SEED_FREELANCERS.map(f => ({ id: f.id, email: f.email, password: "Password123", name: f.name, role: "freelancer" })),
   ]);
   const [toasts, setToasts] = useState([]);
   const [notifications, setNotifications] = useState([
@@ -385,6 +384,82 @@ export default function BridgeOfTalentApp() {
   const removeSavedSearch = useCallback((id) => {
     setSavedSearches(prev => prev.filter(s => s.id !== id));
   }, []);
+
+  // ==========================================================================
+  // FREELANCER DATA — load all freelancers from the database on mount.
+  // Replaces the old in-memory SEED_FREELANCERS array. Public data: no auth
+  // required for reading (the freelancers table has a "anyone can read"
+  // RLS policy from 0001_initial_schema.sql).
+  // ==========================================================================
+
+  // Map a DB row (snake_case, hourly_rate as numeric) to the camelCase shape
+  // the UI components expect. Identical to the mapping used in the auth
+  // session-restore effect's hydrateFreelancer helper, kept consistent so
+  // there's only one definition of "what a freelancer object looks like."
+  const dbRowToFreelancer = useCallback((data, profile) => ({
+    id: data.id,
+    name: profile?.name || "User",
+    email: profile?.email || "",
+    title: data.title || "Freelancer",
+    location: data.location || "",
+    hourlyRate: Number(data.hourly_rate) || 50,
+    rating: Number(data.rating) || 0,
+    reviewCount: Number(data.review_count) || 0,
+    skills: data.skills || [],
+    verifiedSkills: data.verified_skills || [],
+    bio: data.bio || "",
+    status: data.status || "available",
+    avatar: data.avatar || (profile?.name || "U").slice(0, 2).toUpperCase(),
+    identityVerified: !!data.identity_verified,
+    topRated: !!data.top_rated,
+    portfolio: [],
+  }), []);
+
+  // One-time fetch of every freelancer in the database on mount, to populate
+  // the Find Talent listing. We fetch freelancers and profiles in two
+  // parallel queries and join in JavaScript by id -- more robust than
+  // relying on PostgREST's embedded-resource join syntax, and works around
+  // potential RLS edge cases where one table's policy hides rows the other
+  // exposes. Freelancer rows without a matching profile row are filtered out
+  // (edge case: profile deleted but freelancer row orphaned).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const [freelancersRes, profilesRes] = await Promise.all([
+          supabase
+            .from("freelancers")
+            .select("id, title, location, hourly_rate, rating, review_count, skills, verified_skills, bio, status, avatar, identity_verified, top_rated"),
+          supabase
+            .from("profiles")
+            .select("id, name, email, role"),
+        ]);
+        if (cancelled) return;
+        if (freelancersRes.error) {
+          // eslint-disable-next-line no-console
+          console.warn("Failed to load freelancers:", freelancersRes.error.message);
+          return;
+        }
+        const profilesById = new Map(
+          (profilesRes.data || []).map(p => [p.id, p])
+        );
+        const mapped = (freelancersRes.data || [])
+          .map(row => {
+            const profile = profilesById.get(row.id);
+            if (!profile) return null;
+            return dbRowToFreelancer(row, profile);
+          })
+          .filter(Boolean);
+        setFreelancers(mapped);
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Freelancer fetch threw:", e?.message);
+      } finally {
+        if (!cancelled) setFreelancersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dbRowToFreelancer]);
 
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
@@ -604,6 +679,118 @@ export default function BridgeOfTalentApp() {
     addToast("Logged out successfully", "info");
   }, [addToast, navigate]);
 
+  // Update the logged-in freelancer's profile row in the database, then
+  // sync the change into local state so the UI reflects it immediately.
+  // The `fields` parameter takes camelCase keys (title, hourlyRate, location,
+  // bio, skills, status, avatar) and we translate to the DB's snake_case.
+  // RLS policy "freelancers can update own row" (from 0001_initial_schema.sql)
+  // restricts this to the logged-in user's own freelancer row -- any attempt
+  // to update someone else's row will silently return zero rows, which we
+  // surface to the user as an error rather than a false success.
+  const handleUpdateProfile = useCallback(async (fields) => {
+    if (!currentUser?.id) {
+      addToast("You must be signed in to edit your profile", "error");
+      return false;
+    }
+    if (currentUser.role !== "freelancer") {
+      addToast("Only freelancers have an editable profile", "error");
+      return false;
+    }
+
+    // Translate camelCase → snake_case for the DB update, validating each
+    // field as we go. Only fields actually present in `fields` are sent;
+    // omitting a field leaves the DB column untouched.
+    const dbFields = {};
+    if (fields.title !== undefined) dbFields.title = sanitizeString(fields.title, 80);
+    if (fields.location !== undefined) dbFields.location = sanitizeString(fields.location, 80);
+    if (fields.hourlyRate !== undefined) {
+      const n = Number(fields.hourlyRate);
+      if (!Number.isFinite(n) || n < 0 || n > 10000) {
+        addToast("Hourly rate must be between 0 and 10000", "error");
+        return false;
+      }
+      dbFields.hourly_rate = n;
+    }
+    if (fields.bio !== undefined) dbFields.bio = sanitizeString(fields.bio, 1000);
+    if (fields.skills !== undefined) {
+      if (!Array.isArray(fields.skills)) {
+        addToast("Skills must be a list", "error");
+        return false;
+      }
+      // De-dup (case-insensitive), trim, drop empties, cap individual skill
+      // length to 30 chars, cap list size to 30. Preserve the user's original
+      // casing for display ("React" not "react").
+      const seen = new Set();
+      const cleaned = [];
+      for (const raw of fields.skills) {
+        const s = sanitizeString(String(raw), 30);
+        if (!s) continue;
+        const key = s.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        cleaned.push(s);
+        if (cleaned.length >= 30) break;
+      }
+      dbFields.skills = cleaned;
+    }
+    if (fields.status !== undefined) {
+      if (!["available", "busy"].includes(fields.status)) {
+        addToast("Status must be available or busy", "error");
+        return false;
+      }
+      dbFields.status = fields.status;
+    }
+    if (fields.avatar !== undefined) {
+      // Avatar is a 2-char display string (initials). Strip whitespace,
+      // uppercase, cap at 2 chars. Empty → derive initials from name.
+      const v = String(fields.avatar).replace(/\s+/g, "").toUpperCase().slice(0, 2);
+      dbFields.avatar = v || (currentUser.name || "U").slice(0, 2).toUpperCase();
+    }
+
+    if (Object.keys(dbFields).length === 0) {
+      addToast("Nothing to update", "info");
+      return false;
+    }
+
+    const { data, error } = await supabase
+      .from("freelancers")
+      .update(dbFields)
+      .eq("id", currentUser.id)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      addToast(error.message || "Failed to save profile", "error");
+      return false;
+    }
+    if (!data) {
+      // RLS rejected the update silently (returned 0 rows) -- most likely the
+      // current user doesn't have a freelancer row yet (signup trigger
+      // didn't create one, or it was deleted manually).
+      addToast("Couldn't save: no freelancer row found for your account", "error");
+      return false;
+    }
+
+    // Merge the fresh DB values into local state so the listing and own
+    // profile view both reflect the new values without a refetch.
+    setFreelancers(prev => prev.map(f => {
+      if (f.id !== currentUser.id) return f;
+      return {
+        ...f,
+        title: data.title ?? f.title,
+        location: data.location ?? f.location,
+        hourlyRate: Number(data.hourly_rate) || f.hourlyRate,
+        bio: data.bio ?? f.bio,
+        skills: data.skills || f.skills,
+        status: data.status || f.status,
+        avatar: data.avatar || f.avatar,
+      };
+    }));
+
+    addToast("Profile updated", "success");
+    return true;
+  }, [currentUser, addToast]);
+
   const handleBid = useCallback((jobId, bidData) => {
     const job = jobs.find(j => j.id === jobId);
     const safe = sanitizeBidInput(bidData);
@@ -777,8 +964,8 @@ export default function BridgeOfTalentApp() {
       {page === "register" && <RegisterPage onRegister={handleRegister} onNavigate={navigate} />}
       {page === "dashboard" && <DashboardPage freelancer={currentFreelancer} jobs={jobs} projects={projects} onNavigate={navigate} profileViews={profileViews} activityLog={activityLog} recommendedJobs={recommendedJobs} />}
       {page === "client-dashboard" && <ClientDashboardPage jobs={jobs} projects={projects} currentUser={currentUser} onNavigate={navigate} freelancers={freelancers} talentPools={talentPools} onAddPool={addTalentPool} onAddToPool={addFreelancerToPool} onRemoveFromPool={removeFreelancerFromPool} activityLog={activityLog} />}
-      {page === "freelancers" && <FreelancersPage freelancers={freelancers} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
-      {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={(freelancerId) => { const convId = getOrCreateConversation(freelancerId); setSelectedConversationId(convId); setPage("messages"); }} currentUser={currentUser} projects={projects} />}
+      {page === "freelancers" && <FreelancersPage freelancers={freelancers} loading={freelancersLoading} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
+      {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={(freelancerId) => { const convId = getOrCreateConversation(freelancerId); setSelectedConversationId(convId); setPage("messages"); }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
       {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} users={users} freelancers={freelancers} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} getOrCreateConversation={getOrCreateConversation} onNavigate={navigate} />}
       {page === "jobs" && <JobsPage jobs={jobs} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={(otherId) => { const cid = getOrCreateConversation(otherId); setSelectedConversationId(cid); setPage("messages"); }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
       {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancers} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
@@ -1168,9 +1355,6 @@ function LoginPage({ onLogin, onNavigate }) {
         <p style={{ textAlign: "center", marginTop: 24, fontSize: 14, color: "var(--gray-500)" }}>
           Don't have an account? <button onClick={() => onNavigate("register")} style={{ color: "var(--brand-600)", fontWeight: 600, background: "none", border: "none", cursor: "pointer", fontSize: 14, fontFamily: "var(--font-sans)" }}>Sign up</button>
         </p>
-        <p style={{ textAlign: "center", marginTop: 10, fontSize: 12, color: "var(--gray-400)" }}>
-          Demo: sarah@example.com / Password123
-        </p>
       </div>
     </div>
   );
@@ -1522,7 +1706,47 @@ function ClientDashboardPage({ jobs, projects, currentUser, onNavigate, freelanc
 // ============================================================================
 // FREELANCERS PAGE
 // ============================================================================
-function FreelancersPage({ freelancers, onNavigate, onViewProfile, savedFreelancerIds = [], onToggleSaveFreelancer, compareIds = [], onCompare, onNavigateToCompare, onSaveSearch }) {
+// ============================================================================
+// FREELANCER CARD SKELETON
+// ----------------------------------------------------------------------------
+// Shown while the DB fetch is in flight so the page doesn't appear empty.
+// The shape matches the real FreelancerCard so the layout doesn't shift when
+// real data arrives. CSS keyframe `skeleton-pulse` is defined in the global
+// CSS string near the top of the App component.
+// ============================================================================
+function FreelancerCardSkeleton() {
+  const block = (w, h, mt = 0) => ({
+    width: w, height: h, marginTop: mt,
+    background: "var(--gray-100)",
+    borderRadius: 6,
+    animation: "skeleton-pulse 1.5s ease-in-out infinite",
+  });
+  return (
+    <div style={{ ...cardStyle, cursor: "default" }} aria-hidden="true">
+      <div style={{ display: "flex", alignItems: "start", gap: 14, marginBottom: 14 }}>
+        <div style={{ width: 50, height: 50, borderRadius: 14, background: "var(--gray-100)", flexShrink: 0, animation: "skeleton-pulse 1.5s ease-in-out infinite" }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={block("60%", 16)} />
+          <div style={block("40%", 12, 8)} />
+        </div>
+      </div>
+      <div style={block("100%", 12, 4)} />
+      <div style={block("90%", 12, 6)} />
+      <div style={{ display: "flex", gap: 12, marginTop: 14 }}>
+        <div style={block(80, 14)} />
+        <div style={block(60, 14)} />
+        <div style={block(70, 14)} />
+      </div>
+      <div style={{ display: "flex", gap: 6, marginTop: 14 }}>
+        <div style={block(60, 22)} />
+        <div style={block(70, 22)} />
+        <div style={block(50, 22)} />
+      </div>
+    </div>
+  );
+}
+
+function FreelancersPage({ freelancers, loading = false, onNavigate, onViewProfile, savedFreelancerIds = [], onToggleSaveFreelancer, compareIds = [], onCompare, onNavigateToCompare, onSaveSearch }) {
   const [search, setSearch] = useState("");
   const [skillFilter, setSkillFilter] = useState("");
   const [rateMin, setRateMin] = useState("");
@@ -1577,7 +1801,11 @@ function FreelancersPage({ freelancers, onNavigate, onViewProfile, savedFreelanc
       </div>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
-        <p style={{ fontSize: 14, color: "var(--gray-400)" }}>Showing {filtered.length} freelancer{filtered.length !== 1 && "s"}</p>
+        <p style={{ fontSize: 14, color: "var(--gray-400)" }}>
+          {loading && freelancers.length === 0
+            ? "Loading freelancers..."
+            : `Showing ${filtered.length} freelancer${filtered.length !== 1 ? "s" : ""}`}
+        </p>
         {onSaveSearch && (search || skillFilter || rateMin || rateMax) && (
           <button
             onClick={() => onSaveSearch("freelancers", search || skillFilter || `Talent ${rateMin || 0}-${rateMax || "∞"}/hr`, { search, skillFilter, rateMin, rateMax, sortBy })}
@@ -1589,7 +1817,10 @@ function FreelancersPage({ freelancers, onNavigate, onViewProfile, savedFreelanc
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 20 }}>
-        {filtered.map((f, i) => (
+        {loading && freelancers.length === 0 ? (
+          Array.from({ length: 6 }).map((_, i) => <FreelancerCardSkeleton key={`skel-${i}`} />)
+        ) : (
+          filtered.map((f, i) => (
           <div key={f.id} role="button" tabIndex={0} onClick={() => onViewProfile?.(f.id)} onKeyDown={e => e.key === "Enter" && onViewProfile?.(f.id)} className="fade-up" style={{ ...cardStyle, animationDelay: `${i * .05}s`, cursor: "pointer" }}>
             <div style={{ display: "flex", alignItems: "start", gap: 14, marginBottom: 14 }}>
               <div style={{ width: 50, height: 50, borderRadius: 14, background: "linear-gradient(135deg, var(--brand-500), var(--accent))", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 15, flexShrink: 0 }}>{f.avatar}</div>
@@ -1624,7 +1855,8 @@ function FreelancersPage({ freelancers, onNavigate, onViewProfile, savedFreelanc
               </div>
             </div>
           </div>
-        ))}
+          ))
+        )}
       </div>
     </div>
   );
@@ -1633,13 +1865,73 @@ function FreelancersPage({ freelancers, onNavigate, onViewProfile, savedFreelanc
 // ============================================================================
 // PROFILE PAGE (full freelancer profile)
 // ============================================================================
-function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack, currentUser, projects = [], onMessage }) {
+function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack, currentUser, projects = [], onMessage, onSaveProfile }) {
   const [showReviewForm, setShowReviewForm] = useState(false);
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const freelancerReviews = (reviews || []).filter(r => r.freelancerId === freelancer?.id);
   const hasWorkedWith = currentUser?.role === "client" && (projects || []).some(p => p.clientId === currentUser?.id && p.members?.includes(freelancer?.id));
   const hasReviewed = (reviews || []).some(r => r.freelancerId === freelancer?.id && r.clientId === currentUser?.id);
+
+  // Is this freelancer the logged-in user? If so, show the "Edit profile"
+  // affordance and allow switching into edit mode.
+  const isOwnProfile = !!(freelancer && currentUser && freelancer.id === currentUser.id);
+
+  // Edit-mode state. Draft holds the in-progress edits; on cancel we throw it
+  // away, on save we send it to the parent's onSaveProfile and reset.
+  const [isEditing, setIsEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [draft, setDraft] = useState(null);
+  const [newSkill, setNewSkill] = useState("");
+
+  // When we enter edit mode (or the underlying freelancer changes), seed
+  // the draft from the current values. This means each "Edit profile" click
+  // starts from a fresh copy of what's currently displayed.
+  useEffect(() => {
+    if (isEditing && freelancer) {
+      setDraft({
+        title: freelancer.title || "",
+        location: freelancer.location || "",
+        hourlyRate: String(freelancer.hourlyRate ?? ""),
+        bio: freelancer.bio || "",
+        skills: Array.isArray(freelancer.skills) ? [...freelancer.skills] : [],
+        status: freelancer.status || "available",
+        avatar: freelancer.avatar || "",
+      });
+      setNewSkill("");
+    }
+  }, [isEditing, freelancer]);
+
+  const addSkillTag = () => {
+    const s = newSkill.trim();
+    if (!s || !draft) return;
+    // De-dup case-insensitively but preserve the user's casing for display.
+    const exists = draft.skills.some(x => x.toLowerCase() === s.toLowerCase());
+    if (exists) { setNewSkill(""); return; }
+    if (draft.skills.length >= 30) return;
+    setDraft({ ...draft, skills: [...draft.skills, s.slice(0, 30)] });
+    setNewSkill("");
+  };
+  const removeSkillTag = (idx) => {
+    if (!draft) return;
+    setDraft({ ...draft, skills: draft.skills.filter((_, i) => i !== idx) });
+  };
+
+  const handleSaveEdits = async () => {
+    if (!onSaveProfile || !draft) return;
+    setSaving(true);
+    const ok = await onSaveProfile({
+      title: draft.title,
+      location: draft.location,
+      hourlyRate: draft.hourlyRate,
+      bio: draft.bio,
+      skills: draft.skills,
+      status: draft.status,
+      avatar: draft.avatar,
+    });
+    setSaving(false);
+    if (ok) setIsEditing(false);
+  };
 
   if (!freelancer) {
     return (
@@ -1651,7 +1943,87 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
   }
   return (
     <div style={{ maxWidth: 800, margin: "0 auto", padding: "32px 24px" }}>
-      <button onClick={onBack} style={{ ...btnStyle, ...btnSecondary, marginBottom: 24, padding: "8px 14px", fontSize: 13 }}>← Back to Find Talent</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 12, marginBottom: 24 }}>
+        <button onClick={onBack} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 13 }}>← Back to Find Talent</button>
+        {isOwnProfile && !isEditing && (
+          <button onClick={() => setIsEditing(true)} style={{ ...btnStyle, ...btnPrimary, padding: "8px 16px", fontSize: 13 }}>Edit profile</button>
+        )}
+      </div>
+
+      {isEditing && draft ? (
+        <div className="fade-up" style={{ ...cardStyle, marginBottom: 24, padding: 32 }}>
+          <h2 style={{ fontSize: 22, fontWeight: 800, color: "var(--gray-900)", marginBottom: 6 }}>Edit your profile</h2>
+          <p style={{ fontSize: 13, color: "var(--gray-500)", marginBottom: 20 }}>Changes save to your account immediately.</p>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+            <label style={{ display: "block" }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Title</span>
+              <input value={draft.title} onChange={e => setDraft({ ...draft, title: e.target.value })} placeholder="e.g. Full Stack Developer" maxLength={80} style={inputStyle} />
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Location</span>
+              <input value={draft.location} onChange={e => setDraft({ ...draft, location: e.target.value })} placeholder="e.g. London, UK" maxLength={80} style={inputStyle} />
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Hourly rate ($/hr)</span>
+              <input type="number" min="0" max="10000" value={draft.hourlyRate} onChange={e => setDraft({ ...draft, hourlyRate: e.target.value })} placeholder="50" style={inputStyle} />
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Status</span>
+              <select value={draft.status} onChange={e => setDraft({ ...draft, status: e.target.value })} style={{ ...inputStyle, cursor: "pointer" }}>
+                <option value="available">Available</option>
+                <option value="busy">Busy</option>
+              </select>
+            </label>
+            <label style={{ display: "block" }}>
+              <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Avatar initials (max 2 chars)</span>
+              <input value={draft.avatar} onChange={e => setDraft({ ...draft, avatar: e.target.value.toUpperCase().slice(0, 2) })} placeholder="e.g. SC" maxLength={2} style={inputStyle} />
+            </label>
+          </div>
+
+          <label style={{ display: "block", marginBottom: 16 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Bio</span>
+            <textarea value={draft.bio} onChange={e => setDraft({ ...draft, bio: e.target.value })} placeholder="Tell clients about your experience, specialisms, and what you're looking for." maxLength={1000} rows={4} style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }} />
+            <span style={{ display: "block", fontSize: 11, color: "var(--gray-400)", marginTop: 4 }}>{draft.bio.length} / 1000</span>
+          </label>
+
+          <div style={{ marginBottom: 20 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 600, color: "var(--gray-700)", marginBottom: 6 }}>Skills</span>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8, minHeight: 32 }}>
+              {draft.skills.length === 0 && (
+                <span style={{ fontSize: 12, color: "var(--gray-400)", padding: "6px 0" }}>No skills yet. Add some below.</span>
+              )}
+              {draft.skills.map((s, i) => (
+                <span key={`${s}-${i}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, padding: "4px 8px 4px 12px", background: "var(--brand-50)", color: "var(--brand-700)", fontSize: 12, fontWeight: 600, borderRadius: var_radius_full }}>
+                  {s}
+                  <button type="button" onClick={() => removeSkillTag(i)} aria-label={`Remove ${s}`} style={{ background: "transparent", border: "none", cursor: "pointer", color: "var(--brand-700)", padding: 2, display: "flex", alignItems: "center", borderRadius: "50%" }}>
+                    <Icons.X />
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                value={newSkill}
+                onChange={e => setNewSkill(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); addSkillTag(); } }}
+                placeholder="Type a skill and press Enter (e.g. React)"
+                maxLength={30}
+                style={{ ...inputStyle, flex: 1 }}
+              />
+              <button type="button" onClick={addSkillTag} disabled={!newSkill.trim() || draft.skills.length >= 30} style={{ ...btnStyle, ...btnSecondary, padding: "8px 16px" }}>Add</button>
+            </div>
+            <span style={{ display: "block", fontSize: 11, color: "var(--gray-400)", marginTop: 4 }}>{draft.skills.length} / 30 skills</span>
+          </div>
+
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <button onClick={() => setIsEditing(false)} disabled={saving} style={{ ...btnStyle, ...btnSecondary, padding: "10px 18px" }}>Cancel</button>
+            <button onClick={handleSaveEdits} disabled={saving} style={{ ...btnStyle, ...btnPrimary, padding: "10px 20px" }}>
+              {saving ? "Saving..." : "Save changes"}
+            </button>
+          </div>
+        </div>
+      ) : (
       <div className="fade-up" style={{ ...cardStyle, marginBottom: 24, padding: 32 }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 24, flexWrap: "wrap" }}>
           <div style={{ width: 96, height: 96, borderRadius: 20, background: "linear-gradient(135deg, var(--brand-500), var(--accent))", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 32, flexShrink: 0 }}>{freelancer.avatar}</div>
@@ -1681,6 +2053,7 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
           </div>
         </div>
       </div>
+      )}
       <div className="fade-up" style={{ ...cardStyle, marginBottom: 24 }}>
         <h3 style={{ fontSize: 16, fontWeight: 700, color: "var(--gray-900)", marginBottom: 12 }}>About</h3>
         <p style={{ fontSize: 15, color: "var(--gray-600)", lineHeight: 1.7 }}>{freelancer.bio || "No bio provided."}</p>
