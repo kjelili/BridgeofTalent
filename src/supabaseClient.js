@@ -23,6 +23,7 @@
 // ============================================================================
 
 import { createClient } from '@supabase/supabase-js';
+import { processLock } from '@supabase/auth-js';
 
 const HARDCODED_SUPABASE_URL = 'https://yizviueujgmnzvjcjnwy.supabase.co';
 const HARDCODED_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InlpenZpdWV1amdtbnp2amNqbnd5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzkyODUwNDgsImV4cCI6MjA5NDg2MTA0OH0.cJQdw_XKoecpdpFWVHqps56cPlbLaj5_BoF0eB-vsTc';
@@ -90,6 +91,17 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
     persistSession: true,
     autoRefreshToken: true,
     detectSessionInUrl: true,
+    // Use the in-process lock instead of the default navigator.locks-based one.
+    // The navigator.locks implementation synchronises auth operations across
+    // browser tabs, but in this single-tab app it was a recurring source of
+    // deadlocks: signOut() and getSession() would hang indefinitely when the
+    // lock was held by a prior operation that hadn't released it.
+    // processLock is the same library's single-process alternative -- it
+    // serialises within one tab (so refresh/auto-refresh races are still
+    // safe) but doesn't reach out to the cross-tab LockManager.
+    // Tradeoff: if a user signs out in one tab, other tabs won't see the
+    // sign-out until they refresh. Acceptable for this app.
+    lock: processLock,
   },
 });
 

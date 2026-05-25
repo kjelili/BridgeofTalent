@@ -390,6 +390,12 @@ export default function BridgeOfTalentApp() {
   // AUTH — real Supabase authentication (replaces the in-memory demo).
   // ==========================================================================
 
+  // True once the initial session-restore attempt on mount has finished
+  // (whether or not it found a session). Used by the page-guard effect
+  // below to know when "no currentUser yet" means "actually logged out"
+  // vs. "session restore still in flight."
+  const [sessionRestoreComplete, setSessionRestoreComplete] = useState(false);
+
   // Restore an existing session on page load and react to login/logout events.
   // Without this, refreshing the page logs the user out.
   useEffect(() => {
@@ -433,16 +439,22 @@ export default function BridgeOfTalentApp() {
     };
 
     (async () => {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (cancelled || !session?.user) return;
       try {
-        const profile = await fetchProfile(session.user.id);
+        const { data: { session } } = await supabase.auth.getSession();
         if (cancelled) return;
-        setCurrentUser(profile);
-        await hydrateFreelancer(profile);
-      } catch (e) {
-        // eslint-disable-next-line no-console
-        console.warn("Profile lookup failed on session restore:", e?.message);
+        if (session?.user) {
+          try {
+            const profile = await fetchProfile(session.user.id);
+            if (cancelled) return;
+            setCurrentUser(profile);
+            await hydrateFreelancer(profile);
+          } catch (e) {
+            // eslint-disable-next-line no-console
+            console.warn("Profile lookup failed on session restore:", e?.message);
+          }
+        }
+      } finally {
+        if (!cancelled) setSessionRestoreComplete(true);
       }
     })();
 
@@ -462,19 +474,16 @@ export default function BridgeOfTalentApp() {
 
     return () => { cancelled = true; subscription?.unsubscribe(); };
   }, []);
-	// Session-aware page guard. If a logged-out user has a stale persisted
-	// page (e.g. "dashboard") from a previous session, bump them to landing
-	// after the session-restore window. Without this they'd briefly see a
-	// broken dashboard rendering for null currentUser.
-	useEffect(() => {
-	  const t = setTimeout(() => {
-        if (!currentUser && RESTORABLE_PAGES.has(page)) {
-          setPage("landing");
-      }
-    }, 1500);
-    return () => clearTimeout(t);
+  // Session-aware page guard. If the persisted page is a logged-in-only
+  // page but session-restore has finished and the user isn't authenticated,
+  // bump them back to landing. Watching the explicit completion flag avoids
+  // the timing race that the previous fixed-timeout version had.
+  useEffect(() => {
+    if (sessionRestoreComplete && !currentUser && RESTORABLE_PAGES.has(page)) {
+      setPage("landing");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [sessionRestoreComplete, currentUser]);
   const handleLogin = useCallback(async (email, password) => {
     const cleanEmail = sanitizeEmail(email);
     if (!cleanEmail) { addToast("Invalid email", "error"); return false; }
@@ -577,26 +586,16 @@ export default function BridgeOfTalentApp() {
   };
 
   const handleLogout = useCallback(async () => {
-    // Best-effort server-side signOut. We DO NOT depend on this succeeding;
+    // Best-effort server-side signOut. We don't depend on it succeeding --
     // a failed logout (expired token, network glitch) must not strand the
-    // user in a half-logged-in UI.
-    //
-    // We also race signOut against a 2s timeout. The @supabase/gotrue-js
-    // client uses an internal localStorage mutex; in some browser states
-    // signOut can hang indefinitely waiting on that lock (it neither
-    // resolves nor rejects), which would prevent the local cleanup below
-    // from ever running. The timeout means "if Supabase doesn't respond in
-    // 2s, give up and clean up locally anyway."
+    // user in a half-logged-in UI. The lock-deadlock that previously caused
+    // signOut to hang indefinitely is now resolved by configuring processLock
+    // in supabaseClient.js, so we no longer race against a timeout here.
     try {
-      await Promise.race([
-        supabase.auth.signOut(),
-        new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("signOut timeout")), 2000)
-        ),
-      ]);
+      await supabase.auth.signOut();
     } catch (e) {
       // eslint-disable-next-line no-console
-      console.warn("supabase.auth.signOut() failed or timed out (ignored):", e?.message);
+      console.warn("supabase.auth.signOut() failed (ignored):", e?.message);
     }
     clearLocalSupabaseSession();
     try { localStorage.removeItem(PAGE_STORAGE_KEY); } catch (_) { /* ignore */ }
