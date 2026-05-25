@@ -688,11 +688,17 @@ export default function BridgeOfTalentApp() {
   // to update someone else's row will silently return zero rows, which we
   // surface to the user as an error rather than a false success.
   const handleUpdateProfile = useCallback(async (fields) => {
+    // eslint-disable-next-line no-console
+    console.log("[handleUpdateProfile] entered", { hasUser: !!currentUser?.id, role: currentUser?.role, fieldKeys: Object.keys(fields || {}) });
     if (!currentUser?.id) {
+      // eslint-disable-next-line no-console
+      console.warn("[handleUpdateProfile] early-return: no currentUser.id");
       addToast("You must be signed in to edit your profile", "error");
       return false;
     }
     if (currentUser.role !== "freelancer") {
+      // eslint-disable-next-line no-console
+      console.warn("[handleUpdateProfile] early-return: role is", currentUser.role);
       addToast("Only freelancers have an editable profile", "error");
       return false;
     }
@@ -752,12 +758,16 @@ export default function BridgeOfTalentApp() {
       return false;
     }
 
+    // eslint-disable-next-line no-console
+    console.log("[handleUpdateProfile] about to send PATCH", { dbFields, id: currentUser.id });
     const { data, error } = await supabase
       .from("freelancers")
       .update(dbFields)
       .eq("id", currentUser.id)
       .select()
       .maybeSingle();
+    // eslint-disable-next-line no-console
+    console.log("[handleUpdateProfile] PATCH returned", { data, error });
 
     if (error) {
       addToast(error.message || "Failed to save profile", "error");
@@ -1918,19 +1928,33 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
   };
 
   const handleSaveEdits = async () => {
-    if (!onSaveProfile || !draft) return;
+    if (!onSaveProfile || !draft) {
+      // eslint-disable-next-line no-console
+      console.warn("[handleSaveEdits] missing", { hasCallback: !!onSaveProfile, hasDraft: !!draft });
+      return;
+    }
+    // eslint-disable-next-line no-console
+    console.log("[handleSaveEdits] starting save with draft", draft);
     setSaving(true);
-    const ok = await onSaveProfile({
-      title: draft.title,
-      location: draft.location,
-      hourlyRate: draft.hourlyRate,
-      bio: draft.bio,
-      skills: draft.skills,
-      status: draft.status,
-      avatar: draft.avatar,
-    });
-    setSaving(false);
-    if (ok) setIsEditing(false);
+    try {
+      const ok = await onSaveProfile({
+        title: draft.title,
+        location: draft.location,
+        hourlyRate: draft.hourlyRate,
+        bio: draft.bio,
+        skills: draft.skills,
+        status: draft.status,
+        avatar: draft.avatar,
+      });
+      // eslint-disable-next-line no-console
+      console.log("[handleSaveEdits] onSaveProfile returned", { ok });
+      if (ok) setIsEditing(false);
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.error("[handleSaveEdits] threw:", e);
+    } finally {
+      setSaving(false);
+    }
   };
 
   if (!freelancer) {
