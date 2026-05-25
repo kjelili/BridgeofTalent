@@ -236,6 +236,7 @@ export default function BridgeOfTalentApp() {
   // restored. localStorage gives us a tiny "remember last page" without
   // pulling in react-router.
   const PAGE_STORAGE_KEY = "bridgeoftalent-current-page";
+  const SELECTED_FREELANCER_STORAGE_KEY = "bridgeoftalent-selected-freelancer";
   const RESTORABLE_PAGES = new Set([
     "dashboard", "jobs", "freelancers", "saved", "messages",
     "projects", "about", "profile",
@@ -261,7 +262,23 @@ export default function BridgeOfTalentApp() {
   const [freelancersLoading, setFreelancersLoading] = useState(true);
   const [jobs, setJobs] = useState(SEED_JOBS);
   const [projects, setProjects] = useState(SEED_PROJECTS);
-  const [selectedFreelancerId, setSelectedFreelancerId] = useState(null);
+  // Restore the selected freelancer id from localStorage too, so a refresh
+  // while viewing a profile lands back on that same profile rather than the
+  // "freelancer not found" fallback. Mirrored to localStorage on change.
+  const [selectedFreelancerId, setSelectedFreelancerId] = useState(() => {
+    try {
+      return localStorage.getItem(SELECTED_FREELANCER_STORAGE_KEY) || null;
+    } catch (_) { return null; }
+  });
+  useEffect(() => {
+    try {
+      if (selectedFreelancerId) {
+        localStorage.setItem(SELECTED_FREELANCER_STORAGE_KEY, selectedFreelancerId);
+      } else {
+        localStorage.removeItem(SELECTED_FREELANCER_STORAGE_KEY);
+      }
+    } catch (_) { /* ignore */ }
+  }, [selectedFreelancerId]);
   const [selectedConversationId, setSelectedConversationId] = useState(null);
   // NOTE: this array now holds only the seeded demo CLIENTS used by legacy
   // parts of the UI (jobs, notifications) until they migrate to Supabase. The
@@ -674,7 +691,9 @@ export default function BridgeOfTalentApp() {
     }
     clearLocalSupabaseSession();
     try { localStorage.removeItem(PAGE_STORAGE_KEY); } catch (_) { /* ignore */ }
+    try { localStorage.removeItem(SELECTED_FREELANCER_STORAGE_KEY); } catch (_) { /* ignore */ }
     setCurrentUser(null);
+    setSelectedFreelancerId(null);
     navigate("landing");
     addToast("Logged out successfully", "info");
   }, [addToast, navigate]);
@@ -688,17 +707,11 @@ export default function BridgeOfTalentApp() {
   // to update someone else's row will silently return zero rows, which we
   // surface to the user as an error rather than a false success.
   const handleUpdateProfile = useCallback(async (fields) => {
-    // eslint-disable-next-line no-console
-    console.log("[handleUpdateProfile] entered", { hasUser: !!currentUser?.id, role: currentUser?.role, fieldKeys: Object.keys(fields || {}) });
     if (!currentUser?.id) {
-      // eslint-disable-next-line no-console
-      console.warn("[handleUpdateProfile] early-return: no currentUser.id");
       addToast("You must be signed in to edit your profile", "error");
       return false;
     }
     if (currentUser.role !== "freelancer") {
-      // eslint-disable-next-line no-console
-      console.warn("[handleUpdateProfile] early-return: role is", currentUser.role);
       addToast("Only freelancers have an editable profile", "error");
       return false;
     }
@@ -758,9 +771,6 @@ export default function BridgeOfTalentApp() {
       return false;
     }
 
-    // eslint-disable-next-line no-console
-    console.log("[handleUpdateProfile] about to send PATCH", { dbFields, id: currentUser.id });
-
     // We send the PATCH as a raw fetch() rather than via supabase.from('...').update(...)
     // because the SDK's PostgREST client internally calls auth.getSession() to
     // attach a Bearer token, and on this app that call hangs indefinitely on
@@ -781,8 +791,6 @@ export default function BridgeOfTalentApp() {
     } catch (_) { /* ignore */ }
 
     if (!accessToken) {
-      // eslint-disable-next-line no-console
-      console.warn("[handleUpdateProfile] no access token in localStorage; aborting");
       addToast("Your session has expired. Please sign in again.", "error");
       return false;
     }
@@ -818,9 +826,6 @@ export default function BridgeOfTalentApp() {
     } catch (e) {
       error = { message: e?.message || "Network error" };
     }
-
-    // eslint-disable-next-line no-console
-    console.log("[handleUpdateProfile] PATCH returned", { data, error });
 
     if (error) {
       addToast(error.message || "Failed to save profile", "error");
@@ -1981,13 +1986,7 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
   };
 
   const handleSaveEdits = async () => {
-    if (!onSaveProfile || !draft) {
-      // eslint-disable-next-line no-console
-      console.warn("[handleSaveEdits] missing", { hasCallback: !!onSaveProfile, hasDraft: !!draft });
-      return;
-    }
-    // eslint-disable-next-line no-console
-    console.log("[handleSaveEdits] starting save with draft", draft);
+    if (!onSaveProfile || !draft) return;
     setSaving(true);
     try {
       const ok = await onSaveProfile({
@@ -1999,12 +1998,12 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
         status: draft.status,
         avatar: draft.avatar,
       });
-      // eslint-disable-next-line no-console
-      console.log("[handleSaveEdits] onSaveProfile returned", { ok });
       if (ok) setIsEditing(false);
     } catch (e) {
+      // Unexpected: handleUpdateProfile catches its own errors internally
+      // and returns false. If we end up here something deeper went wrong.
       // eslint-disable-next-line no-console
-      console.error("[handleSaveEdits] threw:", e);
+      console.error("handleSaveEdits threw:", e);
     } finally {
       setSaving(false);
     }
