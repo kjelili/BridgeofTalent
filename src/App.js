@@ -9,7 +9,7 @@ import {
   sanitizeProfileInput,
   LIMITS,
 } from "./utils/security";
-import { supabase, fetchProfile } from "./supabaseClient";
+import { supabase, fetchProfile, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_AUTH_STORAGE_KEY } from "./supabaseClient";
 
 // ============================================================================
 // DATA STORE (In-memory database simulation)
@@ -761,45 +761,64 @@ export default function BridgeOfTalentApp() {
     // eslint-disable-next-line no-console
     console.log("[handleUpdateProfile] about to send PATCH", { dbFields, id: currentUser.id });
 
-    // Proactively refresh the auth session before the PATCH. The postgrest
-    // client internally calls auth.getSession() (which may trigger an
-    // auto-refresh) when attaching the Authorization header; if a refresh
-    // ends up running concurrently with another one, the in-process lock
-    // can deadlock. Refreshing here forces any pending refresh to complete
-    // first, so the PATCH's internal getSession() finds a fresh token and
-    // takes the fast path. We race this against a 5s timeout so a wedge
-    // here doesn't trap us before we even get to the PATCH.
+    // We send the PATCH as a raw fetch() rather than via supabase.from('...').update(...)
+    // because the SDK's PostgREST client internally calls auth.getSession() to
+    // attach a Bearer token, and on this app that call hangs indefinitely on
+    // the auth library's in-process lock (observed reliably after a few save
+    // attempts in one session). The lock issue is documented upstream and
+    // bypassing it for this single operation is the most reliable workaround.
+    //
+    // We read the access token directly from localStorage where the SDK stores
+    // it. If it's missing or expired, the PATCH will return 401 and we surface
+    // that as an error. Worst case the user re-logs and saves again.
+    let accessToken = null;
     try {
-      await Promise.race([
-        supabase.auth.refreshSession(),
-        new Promise((_, reject) => setTimeout(() => reject(new Error("refresh timeout")), 5000)),
-      ]);
+      const raw = localStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        accessToken = parsed?.access_token || null;
+      }
+    } catch (_) { /* ignore */ }
+
+    if (!accessToken) {
       // eslint-disable-next-line no-console
-      console.log("[handleUpdateProfile] proactive refresh ok");
-    } catch (e) {
-      // eslint-disable-next-line no-console
-      console.warn("[handleUpdateProfile] proactive refresh failed/timed out (continuing anyway):", e?.message);
+      console.warn("[handleUpdateProfile] no access token in localStorage; aborting");
+      addToast("Your session has expired. Please sign in again.", "error");
+      return false;
     }
 
-    // Race the PATCH against a 10-second timeout. The PostgREST client in
-    // @supabase/supabase-js internally calls auth.getSession() to attach a
-    // fresh Bearer token, and that call can deadlock against a concurrent
-    // (or stuck) auto-refresh inside the auth library's own lock. We
-    // observed this on second/subsequent saves in the same browser session.
-    // If the await hangs, the timeout below resolves so the user sees a
-    // real error and the button unsticks. They can then click Save again
-    // (the second click usually succeeds because the lock state advances).
-    const patchPromise = supabase
-      .from("freelancers")
-      .update(dbFields)
-      .eq("id", currentUser.id)
-      .select()
-      .maybeSingle();
-    const timeoutPromise = new Promise((resolve) => setTimeout(
-      () => resolve({ data: null, error: { message: "Save timed out -- please click Save again", __timeout: true } }),
-      10000
-    ));
-    const { data, error } = await Promise.race([patchPromise, timeoutPromise]);
+    let data = null;
+    let error = null;
+    try {
+      const resp = await fetch(
+        `${SUPABASE_URL}/rest/v1/freelancers?id=eq.${currentUser.id}&select=*`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+            "apikey": SUPABASE_ANON_KEY,
+            "Authorization": `Bearer ${accessToken}`,
+            // Prefer: return=representation tells PostgREST to return the
+            // updated rows in the response body. Without this, PostgREST
+            // returns an empty body and our state-merge step has nothing
+            // to merge.
+            "Prefer": "return=representation",
+          },
+          body: JSON.stringify(dbFields),
+        }
+      );
+      if (!resp.ok) {
+        const txt = await resp.text().catch(() => "");
+        error = { message: `HTTP ${resp.status}: ${txt || resp.statusText}` };
+      } else {
+        const rows = await resp.json();
+        // PostgREST returns an array even for single-row updates.
+        data = Array.isArray(rows) ? (rows[0] || null) : (rows || null);
+      }
+    } catch (e) {
+      error = { message: e?.message || "Network error" };
+    }
+
     // eslint-disable-next-line no-console
     console.log("[handleUpdateProfile] PATCH returned", { data, error });
 

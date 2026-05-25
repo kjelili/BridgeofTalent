@@ -33,6 +33,17 @@ const supabaseUrl =
 const supabaseAnonKey =
   process.env.REACT_APP_SUPABASE_ANON_KEY || HARDCODED_SUPABASE_ANON_KEY;
 
+// Exported so callers can build raw fetch() requests as a fallback when the
+// SDK's internal auth lock wedges. See handleUpdateProfile in App.js.
+export const SUPABASE_URL = supabaseUrl;
+export const SUPABASE_ANON_KEY = supabaseAnonKey;
+// Auth token is stored in localStorage by the SDK under this key (project ref
+// is parsed from the URL). Reading it directly lets us attach a Bearer header
+// without going through the SDK's locked auth path.
+export const SUPABASE_AUTH_STORAGE_KEY =
+  `sb-${(supabaseUrl.match(/https:\/\/([^.]+)/) || [])[1] || ''}-auth-token`;
+
+
 if (
   !supabaseUrl ||
   !supabaseAnonKey ||
