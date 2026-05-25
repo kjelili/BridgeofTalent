@@ -760,12 +760,46 @@ export default function BridgeOfTalentApp() {
 
     // eslint-disable-next-line no-console
     console.log("[handleUpdateProfile] about to send PATCH", { dbFields, id: currentUser.id });
-    const { data, error } = await supabase
+
+    // Proactively refresh the auth session before the PATCH. The postgrest
+    // client internally calls auth.getSession() (which may trigger an
+    // auto-refresh) when attaching the Authorization header; if a refresh
+    // ends up running concurrently with another one, the in-process lock
+    // can deadlock. Refreshing here forces any pending refresh to complete
+    // first, so the PATCH's internal getSession() finds a fresh token and
+    // takes the fast path. We race this against a 5s timeout so a wedge
+    // here doesn't trap us before we even get to the PATCH.
+    try {
+      await Promise.race([
+        supabase.auth.refreshSession(),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("refresh timeout")), 5000)),
+      ]);
+      // eslint-disable-next-line no-console
+      console.log("[handleUpdateProfile] proactive refresh ok");
+    } catch (e) {
+      // eslint-disable-next-line no-console
+      console.warn("[handleUpdateProfile] proactive refresh failed/timed out (continuing anyway):", e?.message);
+    }
+
+    // Race the PATCH against a 10-second timeout. The PostgREST client in
+    // @supabase/supabase-js internally calls auth.getSession() to attach a
+    // fresh Bearer token, and that call can deadlock against a concurrent
+    // (or stuck) auto-refresh inside the auth library's own lock. We
+    // observed this on second/subsequent saves in the same browser session.
+    // If the await hangs, the timeout below resolves so the user sees a
+    // real error and the button unsticks. They can then click Save again
+    // (the second click usually succeeds because the lock state advances).
+    const patchPromise = supabase
       .from("freelancers")
       .update(dbFields)
       .eq("id", currentUser.id)
       .select()
       .maybeSingle();
+    const timeoutPromise = new Promise((resolve) => setTimeout(
+      () => resolve({ data: null, error: { message: "Save timed out -- please click Save again", __timeout: true } }),
+      10000
+    ));
+    const { data, error } = await Promise.race([patchPromise, timeoutPromise]);
     // eslint-disable-next-line no-console
     console.log("[handleUpdateProfile] PATCH returned", { data, error });
 
