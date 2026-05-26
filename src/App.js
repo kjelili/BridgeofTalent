@@ -9,7 +9,7 @@ import {
   sanitizeProfileInput,
   LIMITS,
 } from "./utils/security";
-import { supabase, fetchProfile, SUPABASE_URL, SUPABASE_ANON_KEY, SUPABASE_AUTH_STORAGE_KEY } from "./supabaseClient";
+import { supabase, fetchProfile, supabaseAuthFetch } from "./supabaseClient";
 
 // ============================================================================
 // DATA STORE (In-memory database simulation)
@@ -66,12 +66,9 @@ const CATEGORIES = [
 // The same six demos were inserted into the DB via migration 0002, so the
 // listing looks identical.
 
-const SEED_JOBS = [
-  { id: "j1", clientId: "c1", clientName: "TechCorp Inc.", title: "Full Stack Developer for E-commerce Platform", description: "We need an experienced full stack developer to build a modern e-commerce platform with React frontend and Node.js backend. Must have experience with payment integrations and cloud deployment.", skills: ["React", "Node.js", "AWS", "MongoDB"], budgetMin: 5000, budgetMax: 8000, budgetType: "fixed", category: "Web Development", location: "Remote", status: "open", createdAt: Date.now() - 86400000 * 3, deadline: Date.now() + 86400000 * 45, bids: [{ id: "b1", freelancerId: "f1", freelancerName: "Sarah Chen", amount: 6500, message: "I have 8+ years building e-commerce platforms.", timeline: "6 weeks", createdAt: Date.now() - 86400000 * 2, status: "pending" }], teamSize: 1 },
-  { id: "j2", clientId: "c2", clientName: "Startup.io", title: "UI/UX Designer for Fitness App", description: "Looking for a talented designer to create stunning designs for our fitness tracking mobile app. Need wireframes, prototypes, and final designs in Figma.", skills: ["Figma", "UI/UX Design"], budgetMin: 2500, budgetMax: 4000, budgetType: "fixed", category: "Design", location: "Remote", status: "open", createdAt: Date.now() - 86400000 * 1, deadline: Date.now() + 86400000 * 30, bids: [], teamSize: 1 },
-  { id: "j3", clientId: "c1", clientName: "TechCorp Inc.", title: "Cloud Migration & DevOps Team", description: "Major cloud migration project. Need a team of 3-4 specialists to migrate our legacy infrastructure to AWS with CI/CD pipeline, auto-scaling, and cost optimization.", skills: ["AWS", "Docker", "Kubernetes", "Terraform", "DevOps"], budgetMin: 15000, budgetMax: 25000, budgetType: "fixed", category: "DevOps", location: "Remote", status: "open", createdAt: Date.now() - 86400000 * 5, deadline: Date.now() + 86400000 * 60, bids: [], teamSize: 4 },
-  { id: "j4", clientId: "c3", clientName: "DataDriven Co.", title: "ML Model for Customer Churn Prediction", description: "Build a machine learning model to predict customer churn. Includes data analysis, feature engineering, model training, evaluation, and deployment.", skills: ["Python", "Machine Learning", "TensorFlow", "SQL"], budgetMin: 3000, budgetMax: 5000, budgetType: "fixed", category: "AI/ML", location: "Remote", status: "open", createdAt: Date.now() - 86400000 * 2, deadline: Date.now() + 86400000 * 40, bids: [], teamSize: 2 },
-];
+// NOTE: SEED_JOBS used to be defined here as a hard-coded list of demo
+// jobs (in-memory). Removed -- jobs now load from public.jobs in Supabase.
+// SEED_PROJECTS is still here pending the same migration in a later session.
 
 const SEED_PROJECTS = [
   { id: "p1", clientId: "c1", clientName: "TechCorp Inc.", title: "Enterprise Dashboard Rebuild", description: "Complete redesign and rebuild of our internal analytics dashboard.", status: "active", members: ["f1", "f3"], budget: 20000, category: "Web Development", createdAt: Date.now() - 86400000 * 15, escrowReleased: false },
@@ -260,7 +257,10 @@ export default function BridgeOfTalentApp() {
   }, [page]);
   const [freelancers, setFreelancers] = useState([]);
   const [freelancersLoading, setFreelancersLoading] = useState(true);
-  const [jobs, setJobs] = useState(SEED_JOBS);
+  // Jobs were previously seeded from SEED_JOBS (in-memory). Now they load
+  // from the public.jobs table -- see fetch effect below.
+  const [jobs, setJobs] = useState([]);
+  const [jobsLoading, setJobsLoading] = useState(true);
   const [projects, setProjects] = useState(SEED_PROJECTS);
   // Restore the selected freelancer id from localStorage too, so a refresh
   // while viewing a profile lands back on that same profile rather than the
@@ -477,6 +477,59 @@ export default function BridgeOfTalentApp() {
     })();
     return () => { cancelled = true; };
   }, [dbRowToFreelancer]);
+
+  // Map a row from public.jobs (snake_case DB shape) to the camelCase shape
+  // the rest of the UI expects. Bids are NOT included here -- they live in
+  // a separate table and are loaded/managed independently (next session).
+  // For now every freshly-loaded job gets an empty bids array so existing
+  // `job.bids.some(...)` callers don't blow up.
+  const dbRowToJob = useCallback((row) => ({
+    id: row.id,
+    clientId: row.client_id,
+    clientName: row.client_name || "",
+    title: row.title || "",
+    description: row.description || "",
+    skills: row.skills || [],
+    budgetMin: Number(row.budget_min) || 0,
+    budgetMax: Number(row.budget_max) || 0,
+    budgetType: row.budget_type || "fixed",
+    category: row.category || "Other",
+    location: row.location || "Remote",
+    teamSize: Number(row.team_size) || 1,
+    status: row.status || "open",
+    deadline: row.deadline ? new Date(row.deadline).getTime() : null,
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+    bids: [],
+  }), []);
+
+  // One-time fetch of every job on mount. Public-read RLS (see migration
+  // 0001) means we get all jobs regardless of who's logged in -- correct for
+  // a marketplace listing. Reads go through the SDK because the auth-lock
+  // issue we hit only affects writes.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data: rows, error } = await supabase
+          .from("jobs")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (cancelled) return;
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn("Jobs fetch error:", error.message);
+          return;
+        }
+        setJobs((rows || []).map(dbRowToJob));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Jobs fetch threw:", e?.message);
+      } finally {
+        if (!cancelled) setJobsLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dbRowToJob]);
 
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
@@ -771,61 +824,16 @@ export default function BridgeOfTalentApp() {
       return false;
     }
 
-    // We send the PATCH as a raw fetch() rather than via supabase.from('...').update(...)
-    // because the SDK's PostgREST client internally calls auth.getSession() to
-    // attach a Bearer token, and on this app that call hangs indefinitely on
-    // the auth library's in-process lock (observed reliably after a few save
-    // attempts in one session). The lock issue is documented upstream and
-    // bypassing it for this single operation is the most reliable workaround.
-    //
-    // We read the access token directly from localStorage where the SDK stores
-    // it. If it's missing or expired, the PATCH will return 401 and we surface
-    // that as an error. Worst case the user re-logs and saves again.
-    let accessToken = null;
-    try {
-      const raw = localStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        accessToken = parsed?.access_token || null;
-      }
-    } catch (_) { /* ignore */ }
-
-    if (!accessToken) {
-      addToast("Your session has expired. Please sign in again.", "error");
-      return false;
-    }
-
-    let data = null;
-    let error = null;
-    try {
-      const resp = await fetch(
-        `${SUPABASE_URL}/rest/v1/freelancers?id=eq.${currentUser.id}&select=*`,
-        {
-          method: "PATCH",
-          headers: {
-            "Content-Type": "application/json",
-            "apikey": SUPABASE_ANON_KEY,
-            "Authorization": `Bearer ${accessToken}`,
-            // Prefer: return=representation tells PostgREST to return the
-            // updated rows in the response body. Without this, PostgREST
-            // returns an empty body and our state-merge step has nothing
-            // to merge.
-            "Prefer": "return=representation",
-          },
-          body: JSON.stringify(dbFields),
-        }
-      );
-      if (!resp.ok) {
-        const txt = await resp.text().catch(() => "");
-        error = { message: `HTTP ${resp.status}: ${txt || resp.statusText}` };
-      } else {
-        const rows = await resp.json();
-        // PostgREST returns an array even for single-row updates.
-        data = Array.isArray(rows) ? (rows[0] || null) : (rows || null);
-      }
-    } catch (e) {
-      error = { message: e?.message || "Network error" };
-    }
+    // Send the PATCH via supabaseAuthFetch (defined in supabaseClient.js)
+    // which bypasses the SDK's auth-locked update path. See the helper's
+    // docstring for why we go around the SDK for writes.
+    const { data: rows, error } = await supabaseAuthFetch(
+      "PATCH",
+      `freelancers?id=eq.${currentUser.id}&select=*`,
+      dbFields
+    );
+    // PostgREST returns an array even for single-row updates.
+    const data = Array.isArray(rows) ? (rows[0] || null) : rows;
 
     if (error) {
       addToast(error.message || "Failed to save profile", "error");
@@ -859,6 +867,11 @@ export default function BridgeOfTalentApp() {
     return true;
   }, [currentUser, addToast]);
 
+  // BIDS ARE STILL IN-MEMORY. Jobs themselves now live in the DB but the
+  // bids array on each job is local-only -- it resets on refresh because
+  // dbRowToJob initialises bids: []. Next migration session will move bids
+  // into the public.bids table and wire these three handlers to write
+  // through. For now they work for the duration of a single browser session.
   const handleBid = useCallback((jobId, bidData) => {
     const job = jobs.find(j => j.id === jobId);
     const safe = sanitizeBidInput(bidData);
@@ -904,17 +917,60 @@ export default function BridgeOfTalentApp() {
     addToast("Bid rejected", "info");
   }, [jobs, addToast, addNotification]);
 
-  const handlePostJob = useCallback((jobData) => {
+  const handlePostJob = useCallback(async (jobData) => {
+    if (!currentUser?.id) {
+      addToast("You must be signed in to post a job", "error");
+      return;
+    }
+    if (currentUser.role !== "client") {
+      addToast("Only clients can post jobs", "error");
+      return;
+    }
+
     const safe = sanitizeJobInput(jobData);
-    const newJob = {
-      id: generateId(), clientId: currentUser.id, clientName: sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME),
-      ...safe, deadline: jobData?.deadline || Date.now() + 86400000 * 30, status: "open", createdAt: Date.now(), bids: []
+    // Build the DB row (snake_case). budget_min/max are numerics; skills is
+    // a text[]; deadline must be ISO-formatted for timestamptz; team_size
+    // defaults to 1; status defaults to 'open' (the column has a default
+    // but being explicit makes the insert obvious).
+    const deadlineMs = jobData?.deadline || Date.now() + 86400000 * 30;
+    const insertRow = {
+      client_id: currentUser.id,
+      client_name: sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME),
+      title: safe.title,
+      description: safe.description || "",
+      skills: Array.isArray(safe.skills) ? safe.skills : [],
+      budget_min: Number(safe.budgetMin) || 0,
+      budget_max: Number(safe.budgetMax) || 0,
+      budget_type: safe.budgetType || "fixed",
+      category: safe.category || "Other",
+      location: safe.location || "Remote",
+      team_size: Number(safe.teamSize) || 1,
+      status: "open",
+      deadline: new Date(deadlineMs).toISOString(),
     };
-    setJobs(prev => [newJob, ...prev]);
-    if (currentUser?.id) logActivity(currentUser.id, "job", `Posted job "${safe.title}"`);
+
+    const { data: rows, error } = await supabaseAuthFetch(
+      "POST",
+      "jobs?select=*",
+      insertRow
+    );
+    if (error) {
+      addToast(error.message || "Failed to post job", "error");
+      return;
+    }
+    const inserted = Array.isArray(rows) ? rows[0] : rows;
+    if (!inserted) {
+      addToast("Job didn't save -- please try again", "error");
+      return;
+    }
+
+    // Optimistically add the new job to local state so the listing updates
+    // immediately, no refetch needed.
+    setJobs(prev => [dbRowToJob(inserted), ...prev]);
+    logActivity(currentUser.id, "job", `Posted job "${safe.title}"`);
     addToast("Job posted successfully!", "success");
     navigate("jobs");
-  }, [currentUser, addToast, navigate, logActivity]);
+  }, [currentUser, addToast, navigate, logActivity, dbRowToJob]);
 
   const handleCreateProject = useCallback((projectData) => {
     const safeTitle = sanitizeString(projectData?.title, LIMITS.TITLE);
@@ -1035,7 +1091,7 @@ export default function BridgeOfTalentApp() {
       {page === "freelancers" && <FreelancersPage freelancers={freelancers} loading={freelancersLoading} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
       {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={(freelancerId) => { const convId = getOrCreateConversation(freelancerId); setSelectedConversationId(convId); setPage("messages"); }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
       {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} users={users} freelancers={freelancers} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} getOrCreateConversation={getOrCreateConversation} onNavigate={navigate} />}
-      {page === "jobs" && <JobsPage jobs={jobs} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={(otherId) => { const cid = getOrCreateConversation(otherId); setSelectedConversationId(cid); setPage("messages"); }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
+      {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={(otherId) => { const cid = getOrCreateConversation(otherId); setSelectedConversationId(cid); setPage("messages"); }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
       {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancers} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
       {page === "post-job" && <PostJobPage onPost={handlePostJob} onNavigate={navigate} />}
       {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancers} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} getInvoiceSummary={getInvoiceSummary} />}
@@ -2260,7 +2316,7 @@ function MessagesPage({ currentUser, conversations, users, freelancers, selected
 // ============================================================================
 // JOBS PAGE with BIDDING
 // ============================================================================
-function JobsPage({ jobs, currentUser, onBid, onAcceptBid, onRejectBid, onNavigate, freelancers, onOpenMessage, savedJobIds = [], onToggleSaveJob, recommendedJobs = [], getRecommendedFreelancers, onSaveSearch }) {
+function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRejectBid, onNavigate, freelancers, onOpenMessage, savedJobIds = [], onToggleSaveJob, recommendedJobs = [], getRecommendedFreelancers, onSaveSearch }) {
   const [search, setSearch] = useState("");
   const [category, setCategory] = useState("all");
   const [budgetMin, setBudgetMin] = useState("");
@@ -2344,7 +2400,11 @@ function JobsPage({ jobs, currentUser, onBid, onAcceptBid, onRejectBid, onNaviga
       )}
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 16 }}>
-        <p style={{ fontSize: 14, color: "var(--gray-400)" }}>Showing {filtered.length} open job{filtered.length !== 1 && "s"}</p>
+        <p style={{ fontSize: 14, color: "var(--gray-400)" }}>
+          {loading && jobs.length === 0
+            ? "Loading jobs..."
+            : `Showing ${filtered.length} open job${filtered.length !== 1 ? "s" : ""}`}
+        </p>
         {onSaveSearch && (search || (category && category !== "all") || budgetMin || budgetMax || skillFilter) && (
           <button
             onClick={() => onSaveSearch("jobs", search || skillFilter || (category !== "all" ? category : "Job search"), { search, category, budgetMin, budgetMax, skillFilter, sortBy })}

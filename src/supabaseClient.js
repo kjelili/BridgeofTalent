@@ -127,3 +127,62 @@ export async function fetchProfile(userId) {
   if (error) throw error;
   return data;
 }
+
+// Raw authenticated fetch against Supabase's PostgREST endpoint.
+//
+// Why this exists: the SDK's .from('...').update/insert/delete() calls
+// internally call auth.getSession() to attach a Bearer token, and that
+// internal call can deadlock on the auth library's in-process lock after
+// the session has been around for a few interactions. We hit this reliably
+// on profile updates and worked around it by going direct. The same risk
+// applies to every authenticated write across the app, so the workaround
+// lives here as a shared helper rather than copy-pasted per call site.
+//
+// Reads usually work through the SDK fine (they go through a different
+// code path), so this helper is intended for writes. Returns
+// { data, error } shaped like the SDK does, so call sites can be similar.
+//
+// `path` is relative to /rest/v1/, e.g. "jobs?id=eq.abc&select=*".
+// `body` is auto-JSON-stringified if it's an object. Headers default to
+// "Prefer: return=representation" so the response includes the affected
+// rows (matching .select() on the SDK side).
+export async function supabaseAuthFetch(method, path, body = null, extraHeaders = {}) {
+  let accessToken = null;
+  try {
+    const raw = localStorage.getItem(SUPABASE_AUTH_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      accessToken = parsed?.access_token || null;
+    }
+  } catch (_) { /* ignore */ }
+
+  if (!accessToken) {
+    return { data: null, error: { message: 'Your session has expired. Please sign in again.' } };
+  }
+
+  const headers = {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_ANON_KEY,
+    'Authorization': `Bearer ${accessToken}`,
+    'Prefer': 'return=representation',
+    ...extraHeaders,
+  };
+
+  try {
+    const resp = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+      method,
+      headers,
+      body: body != null ? (typeof body === 'string' ? body : JSON.stringify(body)) : undefined,
+    });
+    if (!resp.ok) {
+      const txt = await resp.text().catch(() => '');
+      return { data: null, error: { message: `HTTP ${resp.status}: ${txt || resp.statusText}`, status: resp.status } };
+    }
+    // 204 No Content is valid for DELETE -- treat as success with null data.
+    if (resp.status === 204) return { data: null, error: null };
+    const parsed = await resp.json().catch(() => null);
+    return { data: parsed, error: null };
+  } catch (e) {
+    return { data: null, error: { message: e?.message || 'Network error' } };
+  }
+}
