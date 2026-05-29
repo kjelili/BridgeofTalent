@@ -502,6 +502,21 @@ export default function BridgeOfTalentApp() {
     bids: [],
   }), []);
 
+  // DB row -> in-memory bid shape used throughout the UI (see JobsPage,
+  // DashboardPage, ClientDashboardPage). Field names are kept identical to the
+  // pre-migration shape so no UI consumer needs to change.
+  const dbRowToBid = useCallback((row) => ({
+    id: row.id,
+    jobId: row.job_id,
+    freelancerId: row.freelancer_id,
+    freelancerName: row.freelancer_name || "",
+    amount: Number(row.amount) || 0,
+    message: row.message || "",
+    timeline: row.timeline || "",
+    status: row.status || "pending",
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  }), []);
+
   // One-time fetch of every job on mount. Public-read RLS (see migration
   // 0001) means we get all jobs regardless of who's logged in -- correct for
   // a marketplace listing. Reads go through the SDK because the auth-lock
@@ -530,6 +545,45 @@ export default function BridgeOfTalentApp() {
     })();
     return () => { cancelled = true; };
   }, [dbRowToJob]);
+
+  // Load every bid the current user is allowed to see, then bucket them onto
+  // their parent jobs in local state. RLS on public.bids (see migration 0001)
+  // already restricts the rows to: the bidding freelancer OR the job's
+  // client -- so a single unfiltered SELECT is correct and safe.
+  //
+  // We go through supabaseAuthFetch (not the SDK) because the response needs
+  // the user's JWT for RLS to filter; the helper attaches it from
+  // localStorage without touching the auth lock. Re-runs whenever the user
+  // logs in/out so the visible bid set always matches their identity.
+  useEffect(() => {
+    if (!currentUser?.id) {
+      // Logged out: clear any bids that may have been bucketed onto jobs.
+      setJobs(prev => prev.map(j => (j.bids?.length ? { ...j, bids: [] } : j)));
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data: rows, error } = await supabaseAuthFetch(
+        "GET",
+        "bids?select=*&order=created_at.desc"
+      );
+      if (cancelled) return;
+      if (error) {
+        // Non-fatal: jobs list still works, just without bid counts/details.
+        // eslint-disable-next-line no-console
+        console.warn("Bids fetch error:", error.message);
+        return;
+      }
+      const byJob = new Map();
+      for (const r of (rows || [])) {
+        const bid = dbRowToBid(r);
+        if (!byJob.has(bid.jobId)) byJob.set(bid.jobId, []);
+        byJob.get(bid.jobId).push(bid);
+      }
+      setJobs(prev => prev.map(j => ({ ...j, bids: byJob.get(j.id) || [] })));
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser?.id, dbRowToBid]);
 
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
@@ -867,34 +921,128 @@ export default function BridgeOfTalentApp() {
     return true;
   }, [currentUser, addToast]);
 
-  // BIDS ARE STILL IN-MEMORY. Jobs themselves now live in the DB but the
-  // bids array on each job is local-only -- it resets on refresh because
-  // dbRowToJob initialises bids: []. Next migration session will move bids
-  // into the public.bids table and wire these three handlers to write
-  // through. For now they work for the duration of a single browser session.
-  const handleBid = useCallback((jobId, bidData) => {
+  // BIDS — persisted to public.bids. The DB enforces uniqueness
+  // (one bid per freelancer per job) and RLS (freelancer can insert their own
+  // bid; either party can update status). Local `j.bids` is kept as the
+  // source of truth for the UI; each handler updates it after the DB write
+  // succeeds, so the listing reflects what's persisted.
+  //
+  // Project creation on accept is still in-memory -- the Projects migration
+  // is a separate step. When that ships, replace the setProjects(...) call
+  // in handleAcceptBid with an INSERT to public.projects + project_members.
+  const handleBid = useCallback(async (jobId, bidData) => {
+    if (!currentUser?.id) {
+      addToast("You must be signed in to bid", "error");
+      return;
+    }
+    if (currentUser.role !== "freelancer") {
+      addToast("Only freelancers can place bids", "error");
+      return;
+    }
     const job = jobs.find(j => j.id === jobId);
     const safe = sanitizeBidInput(bidData);
+    const insertRow = {
+      job_id: jobId,
+      freelancer_id: currentUser.id,
+      freelancer_name: sanitizeString(currentUser.name, LIMITS.NAME),
+      amount: Number(safe.amount) || 0,
+      message: safe.message || "",
+      timeline: safe.timeline || "",
+      status: "pending",
+    };
+
+    const { data: rows, error } = await supabaseAuthFetch(
+      "POST",
+      "bids?select=*",
+      insertRow
+    );
+    if (error) {
+      // 409 from PostgREST = unique constraint (job_id, freelancer_id).
+      // Status is in error.status when supabaseAuthFetch built it from
+      // a non-OK response; check the message too as a fallback.
+      const dup = error.status === 409 || /duplicate|unique/i.test(error.message || "");
+      addToast(
+        dup ? "You've already bid on this job" : (error.message || "Failed to submit bid"),
+        "error"
+      );
+      return;
+    }
+    const inserted = Array.isArray(rows) ? rows[0] : rows;
+    if (!inserted) {
+      addToast("Bid didn't save -- please try again", "error");
+      return;
+    }
+    const newBid = dbRowToBid(inserted);
+
     setJobs(prev => prev.map(j =>
-      j.id === jobId
-        ? { ...j, bids: [...j.bids, { id: generateId(), freelancerId: currentUser.id, freelancerName: sanitizeString(currentUser.name, LIMITS.NAME), ...safe, createdAt: Date.now(), status: "pending" }] }
-        : j
+      j.id === jobId ? { ...j, bids: [...(j.bids || []), newBid] } : j
     ));
     if (job?.clientId) addNotification(job.clientId, "bid", "New bid received", `${currentUser.name} placed a bid on "${job.title}"`);
-    if (currentUser?.id) logActivity(currentUser.id, "bid", `Placed bid on "${job?.title}"`);
+    logActivity(currentUser.id, "bid", `Placed bid on "${job?.title}"`);
     addToast("Bid submitted successfully!", "success");
-  }, [currentUser, jobs, addToast, addNotification, logActivity]);
+  }, [currentUser, jobs, addToast, addNotification, logActivity, dbRowToBid]);
 
-  const handleAcceptBid = useCallback((jobId, bidId) => {
+  const handleAcceptBid = useCallback(async (jobId, bidId) => {
     const job = jobs.find(j => j.id === jobId);
     if (!job || job.clientId !== currentUser?.id) return;
     const bid = job.bids.find(b => b.id === bidId);
     if (!bid) return;
+
+    // 1) Accept the chosen bid.
+    const { error: acceptErr } = await supabaseAuthFetch(
+      "PATCH",
+      `bids?id=eq.${bidId}`,
+      { status: "accepted" }
+    );
+    if (acceptErr) {
+      addToast(acceptErr.message || "Failed to accept bid", "error");
+      return;
+    }
+
+    // 2) Reject every other still-pending bid on this job. One round trip;
+    // RLS allows the client to update bids on their own job.
+    const { error: rejectErr } = await supabaseAuthFetch(
+      "PATCH",
+      `bids?job_id=eq.${jobId}&id=neq.${bidId}&status=eq.pending`,
+      { status: "rejected" }
+    );
+    if (rejectErr) {
+      // Non-fatal: the accepted bid is already in the DB. Log and continue
+      // so the client can still see their hire confirmed. The losing
+      // bidders will just see "pending" until a refresh, which is annoying
+      // but recoverable.
+      // eslint-disable-next-line no-console
+      console.warn("Couldn't auto-reject other bids:", rejectErr.message);
+    }
+
+    // 3) Close the job so it stops accepting new bids.
+    const { error: jobErr } = await supabaseAuthFetch(
+      "PATCH",
+      `jobs?id=eq.${jobId}`,
+      { status: "closed" }
+    );
+    if (jobErr) {
+      // Non-fatal for the same reason as above.
+      // eslint-disable-next-line no-console
+      console.warn("Couldn't close job:", jobErr.message);
+    }
+
+    // Mirror the DB changes in local state.
     setJobs(prev => prev.map(j =>
       j.id === jobId
-        ? { ...j, status: "closed", bids: j.bids.map(b => b.id === bidId ? { ...b, status: "accepted" } : { ...b, status: "rejected" }) }
+        ? {
+            ...j,
+            status: jobErr ? j.status : "closed",
+            bids: (j.bids || []).map(b =>
+              b.id === bidId
+                ? { ...b, status: "accepted" }
+                : (b.status === "pending" ? { ...b, status: "rejected" } : b)
+            ),
+          }
         : j
     ));
+
+    // Project creation -- still in-memory until the Projects migration.
     const newProject = {
       id: generateId(), clientId: currentUser.id, clientName: currentUser.company || currentUser.name,
       title: job.title, description: job.description, status: "active", members: [bid.freelancerId],
@@ -902,20 +1050,35 @@ export default function BridgeOfTalentApp() {
     };
     setProjects(prev => [newProject, ...prev]);
     addNotification(bid.freelancerId, "hired", "You were hired!", `You were hired for "${job.title}" by ${currentUser.company || currentUser.name}`);
-    if (currentUser?.id) logActivity(currentUser.id, "hire", `Hired ${bid.freelancerName} for "${job.title}"`);
+    logActivity(currentUser.id, "hire", `Hired ${bid.freelancerName} for "${job.title}"`);
     if (bid.freelancerId) logActivity(bid.freelancerId, "hired", `Hired for "${job.title}"`);
     addToast(`Hired ${bid.freelancerName}! Project created.`, "success");
   }, [jobs, currentUser, addToast, addNotification, logActivity]);
 
-  const handleRejectBid = useCallback((jobId, bidId) => {
+  const handleRejectBid = useCallback(async (jobId, bidId) => {
     const job = jobs.find(j => j.id === jobId);
-    const bid = job?.bids?.find(b => b.id === bidId);
+    if (!job || job.clientId !== currentUser?.id) return;
+    const bid = job.bids?.find(b => b.id === bidId);
+    if (!bid) return;
+
+    const { error } = await supabaseAuthFetch(
+      "PATCH",
+      `bids?id=eq.${bidId}`,
+      { status: "rejected" }
+    );
+    if (error) {
+      addToast(error.message || "Failed to reject bid", "error");
+      return;
+    }
+
     setJobs(prev => prev.map(j =>
-      j.id === jobId ? { ...j, bids: j.bids.map(b => b.id === bidId ? { ...b, status: "rejected" } : b) } : j
+      j.id === jobId
+        ? { ...j, bids: j.bids.map(b => b.id === bidId ? { ...b, status: "rejected" } : b) }
+        : j
     ));
-    if (bid?.freelancerId) addNotification(bid.freelancerId, "bid_rejected", "Bid not accepted", `Your bid on "${job?.title}" was not accepted.`);
+    if (bid.freelancerId) addNotification(bid.freelancerId, "bid_rejected", "Bid not accepted", `Your bid on "${job.title}" was not accepted.`);
     addToast("Bid rejected", "info");
-  }, [jobs, addToast, addNotification]);
+  }, [jobs, currentUser, addToast, addNotification]);
 
   const handlePostJob = useCallback(async (jobData) => {
     if (!currentUser?.id) {
