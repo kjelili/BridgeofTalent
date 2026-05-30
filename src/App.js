@@ -68,11 +68,13 @@ const CATEGORIES = [
 
 // NOTE: SEED_JOBS used to be defined here as a hard-coded list of demo
 // jobs (in-memory). Removed -- jobs now load from public.jobs in Supabase.
-// SEED_PROJECTS is still here pending the same migration in a later session.
 
-const SEED_PROJECTS = [
-  { id: "p1", clientId: "c1", clientName: "TechCorp Inc.", title: "Enterprise Dashboard Rebuild", description: "Complete redesign and rebuild of our internal analytics dashboard.", status: "active", members: ["f1", "f3"], budget: 20000, category: "Web Development", createdAt: Date.now() - 86400000 * 15, escrowReleased: false },
-];
+// NOTE: SEED_PROJECTS used to be defined here as a hard-coded list of demo
+// projects (in-memory). Removed -- projects now load from public.projects
+// in Supabase via a fetch effect in App below. The constant is kept as an
+// empty array so existing call sites (useState(SEED_PROJECTS)) don't need
+// to change.
+const SEED_PROJECTS = [];
 
 // ============================================================================
 // ICONS (inline SVG components)
@@ -369,7 +371,16 @@ export default function BridgeOfTalentApp() {
     addToast("Review submitted!", "success");
   }, [currentUser, addToast]);
 
-  const releaseEscrow = useCallback((projectId) => {
+  const releaseEscrow = useCallback(async (projectId) => {
+    const { error } = await supabaseAuthFetch(
+      "PATCH",
+      `projects?id=eq.${projectId}`,
+      { escrow_released: true }
+    );
+    if (error) {
+      addToast(error.message || "Failed to release payment", "error");
+      return;
+    }
     setProjects(prev => prev.map(p => p.id === projectId ? { ...p, escrowReleased: true } : p));
     addToast("Payment released to freelancer(s)", "success");
   }, [addToast]);
@@ -585,6 +596,55 @@ export default function BridgeOfTalentApp() {
     return () => { cancelled = true; };
   }, [currentUser?.id, dbRowToBid]);
 
+  // DB row -> in-memory project shape. `members` is populated from the
+  // embedded project_members join (PostgREST inlines it via the .select()
+  // below). The team-avatars row in ProjectsPage iterates members as a flat
+  // array of freelancer IDs, which matches what the pre-migration shape was.
+  const dbRowToProject = useCallback((row) => ({
+    id: row.id,
+    clientId: row.client_id,
+    clientName: row.client_name || "",
+    title: row.title || "",
+    description: row.description || "",
+    budget: Number(row.budget) || 0,
+    category: row.category || "Other",
+    status: row.status || "active",
+    escrowReleased: !!row.escrow_released,
+    members: Array.isArray(row.project_members)
+      ? row.project_members.map(m => m.freelancer_id)
+      : [],
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  }), []);
+
+  // One-time fetch of every project on mount. Public-read RLS (see migration
+  // 0001) means everyone gets the full listing -- intentional, since projects
+  // double as the platform's "portfolio of completed work" social proof.
+  // The embedded `project_members(freelancer_id)` is PostgREST syntax that
+  // joins the membership rows in a single round trip; the dbRowToProject
+  // mapper flattens them into the in-memory `members` array.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("projects")
+          .select("*, project_members(freelancer_id)")
+          .order("created_at", { ascending: false });
+        if (cancelled) return;
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn("Projects fetch error:", error.message);
+          return;
+        }
+        setProjects((data || []).map(dbRowToProject));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Projects fetch threw:", e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dbRowToProject]);
+
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
   // ==========================================================================
@@ -604,31 +664,96 @@ export default function BridgeOfTalentApp() {
     // local state so currentFreelancer resolves correctly. Without this, the
     // dashboard shows "Loading..." forever because it looks up the freelancer
     // in the in-memory seed array, which doesn't contain real Supabase users.
+    //
+    // Also reconciles drift between profiles.role and freelancers existence:
+    //
+    //   profile.role  | freelancers row | action
+    //   --------------|-----------------|--------------------------------
+    //   freelancer    | exists          | merge (happy path)
+    //   freelancer    | missing         | self-heal: insert + refetch + merge
+    //                 |                 |   (matches what the signup trigger
+    //                 |                 |    would have done; needed if the
+    //                 |                 |    trigger failed during signup, or
+    //                 |                 |    profiles.role was manually flipped
+    //                 |                 |    client -> freelancer afterwards)
+    //   client        | exists          | log warning, do NOT merge or delete
+    //                 |                 |   (orphan row makes the user appear
+    //                 |                 |    in marketplace listings; surfacing
+    //                 |                 |    it in console lets it be cleaned
+    //                 |                 |    up by hand. Auto-delete would be
+    //                 |                 |    destructive if the role flip is
+    //                 |                 |    intentional and reversible.)
+    //   client        | missing         | no-op (happy path)
     const hydrateFreelancer = async (profile) => {
-      if (!profile || profile.role !== "freelancer") return;
-      const { data, error } = await supabase
-        .from("freelancers")
-        .select("id, title, location, hourly_rate, rating, review_count, skills, verified_skills, bio, status, avatar, identity_verified, top_rated")
-        .eq("id", profile.id)
-        .maybeSingle();
-      if (error || !data || cancelled) return;
+      if (!profile) return;
+
+      let row = null;
+      try {
+        const { data, error } = await supabase
+          .from("freelancers")
+          .select("id, title, location, hourly_rate, rating, review_count, skills, verified_skills, bio, status, avatar, identity_verified, top_rated")
+          .eq("id", profile.id)
+          .maybeSingle();
+        if (cancelled) return;
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn("Freelancer hydrate fetch failed:", error.message);
+          return;
+        }
+        row = data;
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Freelancer hydrate threw:", e?.message);
+        return;
+      }
+
+      if (profile.role === "freelancer" && !row) {
+        // Self-heal the missing-row drift case.
+        // eslint-disable-next-line no-console
+        console.warn(`Profile/freelancer drift for ${profile.id}: role=freelancer but no row. Self-healing.`);
+        const { error: insErr } = await supabaseAuthFetch("POST", "freelancers?select=*", {
+          id: profile.id,
+          avatar: (profile.name || "U").slice(0, 2).toUpperCase(),
+        });
+        if (insErr) {
+          // eslint-disable-next-line no-console
+          console.warn("Couldn't auto-create freelancers row:", insErr.message);
+          return;
+        }
+        const retry = await supabase
+          .from("freelancers")
+          .select("id, title, location, hourly_rate, rating, review_count, skills, verified_skills, bio, status, avatar, identity_verified, top_rated")
+          .eq("id", profile.id)
+          .maybeSingle();
+        if (cancelled || retry.error) return;
+        row = retry.data;
+      } else if (profile.role !== "freelancer" && row) {
+        // Detect-only: orphan row for a non-freelancer profile. Don't merge
+        // (profile.role wins for UI purposes) and don't delete.
+        // eslint-disable-next-line no-console
+        console.warn(`Orphan freelancers row for non-freelancer profile ${profile.id}; not auto-removed.`);
+        return;
+      }
+
+      if (!row) return;
+
       // Map DB snake_case to the app's camelCase shape used by the UI.
       const merged = {
-        id: data.id,
+        id: row.id,
         name: profile.name,
         email: profile.email,
-        title: data.title || "Freelancer",
-        location: data.location || "",
-        hourlyRate: Number(data.hourly_rate) || 50,
-        rating: Number(data.rating) || 0,
-        reviewCount: Number(data.review_count) || 0,
-        skills: data.skills || [],
-        verifiedSkills: data.verified_skills || [],
-        bio: data.bio || "",
-        status: data.status || "available",
-        avatar: data.avatar || (profile.name || "U").slice(0, 2).toUpperCase(),
-        identityVerified: !!data.identity_verified,
-        topRated: !!data.top_rated,
+        title: row.title || "Freelancer",
+        location: row.location || "",
+        hourlyRate: Number(row.hourly_rate) || 50,
+        rating: Number(row.rating) || 0,
+        reviewCount: Number(row.review_count) || 0,
+        skills: row.skills || [],
+        verifiedSkills: row.verified_skills || [],
+        bio: row.bio || "",
+        status: row.status || "available",
+        avatar: row.avatar || (profile.name || "U").slice(0, 2).toUpperCase(),
+        identityVerified: !!row.identity_verified,
+        topRated: !!row.top_rated,
         portfolio: [],
       };
       setFreelancers(prev => {
@@ -927,9 +1052,10 @@ export default function BridgeOfTalentApp() {
   // source of truth for the UI; each handler updates it after the DB write
   // succeeds, so the listing reflects what's persisted.
   //
-  // Project creation on accept is still in-memory -- the Projects migration
-  // is a separate step. When that ships, replace the setProjects(...) call
-  // in handleAcceptBid with an INSERT to public.projects + project_members.
+  // When a bid is accepted, handleAcceptBid also creates a row in
+  // public.projects and adds the hired freelancer to public.project_members.
+  // That bookkeeping is best-effort -- if it fails, the bid acceptance still
+  // persists and the client can create the project manually.
   const handleBid = useCallback(async (jobId, bidData) => {
     if (!currentUser?.id) {
       addToast("You must be signed in to bid", "error");
@@ -1042,18 +1168,57 @@ export default function BridgeOfTalentApp() {
         : j
     ));
 
-    // Project creation -- still in-memory until the Projects migration.
-    const newProject = {
-      id: generateId(), clientId: currentUser.id, clientName: currentUser.company || currentUser.name,
-      title: job.title, description: job.description, status: "active", members: [bid.freelancerId],
-      budget: bid.amount || job.budgetMax, category: job.category, createdAt: Date.now(), fromJobId: jobId, escrowReleased: false
+    // Create the corresponding project + add the hired freelancer to its
+    // members. The bid acceptance above is the legally-important step and
+    // has already persisted; project creation here is bookkeeping. If it
+    // fails we log + warn the user but do NOT roll back the acceptance --
+    // they can create the project manually from the Projects page if
+    // needed, which is a better UX than re-opening a closed job.
+    const projectInsert = {
+      client_id: currentUser.id,
+      client_name: sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME),
+      title: job.title,
+      description: job.description || "",
+      budget: Number(bid.amount) || Number(job.budgetMax) || 0,
+      category: job.category || "Other",
+      status: "active",
+      escrow_released: false,
     };
-    setProjects(prev => [newProject, ...prev]);
+    const { data: projRows, error: projErr } = await supabaseAuthFetch(
+      "POST",
+      "projects?select=*",
+      projectInsert
+    );
+    if (projErr) {
+      // eslint-disable-next-line no-console
+      console.warn("Project create on hire failed:", projErr.message);
+      addNotification(bid.freelancerId, "hired", "You were hired!", `You were hired for "${job.title}" by ${currentUser.company || currentUser.name}`);
+      logActivity(currentUser.id, "hire", `Hired ${bid.freelancerName} for "${job.title}"`);
+      if (bid.freelancerId) logActivity(bid.freelancerId, "hired", `Hired for "${job.title}"`);
+      addToast(`Hired ${bid.freelancerName}, but the project record didn't save. You can create it manually from the Projects page.`, "error");
+      return;
+    }
+    const projRow = Array.isArray(projRows) ? projRows[0] : projRows;
+    if (projRow) {
+      const { error: memErr } = await supabaseAuthFetch(
+        "POST",
+        "project_members",
+        [{ project_id: projRow.id, freelancer_id: bid.freelancerId }]
+      );
+      if (memErr) {
+        // eslint-disable-next-line no-console
+        console.warn("Couldn't add member to new project:", memErr.message);
+      }
+      setProjects(prev => [
+        dbRowToProject({ ...projRow, project_members: [{ freelancer_id: bid.freelancerId }] }),
+        ...prev,
+      ]);
+    }
     addNotification(bid.freelancerId, "hired", "You were hired!", `You were hired for "${job.title}" by ${currentUser.company || currentUser.name}`);
     logActivity(currentUser.id, "hire", `Hired ${bid.freelancerName} for "${job.title}"`);
     if (bid.freelancerId) logActivity(bid.freelancerId, "hired", `Hired for "${job.title}"`);
     addToast(`Hired ${bid.freelancerName}! Project created.`, "success");
-  }, [jobs, currentUser, addToast, addNotification, logActivity]);
+  }, [jobs, currentUser, addToast, addNotification, logActivity, dbRowToProject]);
 
   const handleRejectBid = useCallback(async (jobId, bidId) => {
     const job = jobs.find(j => j.id === jobId);
@@ -1135,19 +1300,85 @@ export default function BridgeOfTalentApp() {
     navigate("jobs");
   }, [currentUser, addToast, navigate, logActivity, dbRowToJob]);
 
-  const handleCreateProject = useCallback((projectData) => {
+  const handleCreateProject = useCallback(async (projectData) => {
+    if (!currentUser?.id) {
+      addToast("You must be signed in to create a project", "error");
+      return;
+    }
+    if (currentUser.role !== "client") {
+      addToast("Only clients can create projects", "error");
+      return;
+    }
+
     const safeTitle = sanitizeString(projectData?.title, LIMITS.TITLE);
     const safeDesc = sanitizeString(projectData?.description, 3000);
-    const newProject = {
-      id: generateId(), clientId: currentUser.id, clientName: sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME),
-      title: safeTitle, description: safeDesc, budget: Math.min(1e9, Math.max(0, Number(projectData?.budget) || 0)),
-      category: sanitizeString(projectData?.category, 64), members: Array.isArray(projectData?.members) ? projectData.members.slice(0, 10) : [],
-      status: "active", createdAt: Date.now(), escrowReleased: false
+    const safeBudget = Math.min(1e9, Math.max(0, Number(projectData?.budget) || 0));
+    const safeCategory = sanitizeString(projectData?.category, 64);
+    // The create-project form caps the picker at 4, but defend against
+    // bypass; the schema doesn't enforce a cap on members.
+    const members = Array.isArray(projectData?.members)
+      ? projectData.members.slice(0, 10)
+      : [];
+
+    const insertRow = {
+      client_id: currentUser.id,
+      client_name: sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME),
+      title: safeTitle,
+      description: safeDesc,
+      budget: safeBudget,
+      category: safeCategory,
+      status: "active",
+      escrow_released: false,
     };
-    setProjects(prev => [newProject, ...prev]);
+
+    const { data: rows, error } = await supabaseAuthFetch(
+      "POST",
+      "projects?select=*",
+      insertRow
+    );
+    if (error) {
+      addToast(error.message || "Failed to create project", "error");
+      return;
+    }
+    const inserted = Array.isArray(rows) ? rows[0] : rows;
+    if (!inserted) {
+      addToast("Project didn't save -- please try again", "error");
+      return;
+    }
+
+    // Add team members via the project_members join table. RLS on
+    // project_members lets the project's client manage rows.
+    if (members.length > 0) {
+      const memberRows = members.map(fId => ({
+        project_id: inserted.id,
+        freelancer_id: fId,
+      }));
+      const { error: memberErr } = await supabaseAuthFetch(
+        "POST",
+        "project_members",
+        memberRows
+      );
+      if (memberErr) {
+        // Non-fatal: project exists, the client can add members later.
+        // eslint-disable-next-line no-console
+        console.warn("Failed to add project members:", memberErr.message);
+        addToast("Project created, but couldn't add all team members", "info");
+      }
+    }
+
+    // Optimistic local-state insert. We synthesise the same shape the
+    // load effect would produce, so the new project appears at the top
+    // of the listing immediately without a refetch.
+    setProjects(prev => [
+      dbRowToProject({
+        ...inserted,
+        project_members: members.map(fId => ({ freelancer_id: fId })),
+      }),
+      ...prev,
+    ]);
     addToast("Project created!", "success");
     navigate("projects");
-  }, [currentUser, addToast, navigate]);
+  }, [currentUser, addToast, navigate, dbRowToProject]);
 
   // Get freelancer profile for current user
   const currentFreelancer = useMemo(() =>
