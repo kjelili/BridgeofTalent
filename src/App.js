@@ -342,6 +342,16 @@ export default function BridgeOfTalentApp() {
     setNotifications(prev => prev.map(n => n.userId === currentUser.id ? { ...n, read: true } : n));
   }, [currentUser]);
 
+  // Hoisted above the conversation/message handlers below because both of
+  // them call addToast on the error path; declaring it later triggers the
+  // no-use-before-define lint rule which becomes a build error under CI=1
+  // (Vercel's default).
+  const addToast = useCallback((message, type = "info") => {
+    const id = generateId();
+    setToasts(prev => [...prev, { id, message, type }]);
+    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
+  }, []);
+
   // DB row -> in-memory message shape used by MessagesPage. Pre-migration the
   // shape was { id, senderId, text, createdAt }; preserved exactly so no UI
   // consumer changes.
@@ -468,12 +478,6 @@ export default function BridgeOfTalentApp() {
         : c
     ));
   }, [currentUser?.id, addToast, dbRowToMessage]);
-
-  const addToast = useCallback((message, type = "info") => {
-    const id = generateId();
-    setToasts(prev => [...prev, { id, message, type }]);
-    setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 3500);
-  }, []);
 
   const addReview = useCallback((freelancerId, rating, comment) => {
     const { rating: r, comment: c } = sanitizeReviewInput({ rating, comment });
