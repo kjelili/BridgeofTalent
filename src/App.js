@@ -287,11 +287,15 @@ export default function BridgeOfTalentApp() {
   // freelancer entries were removed when Find Talent moved to a DB-backed
   // fetch -- name lookups for freelancers should use the `freelancers` state
   // (which is populated from the Supabase `freelancers` table).
-  const [users] = useState([
-    { id: "c1", email: "alex@techcorp.com", password: "Password123", name: "Alex Thompson", role: "client", company: "TechCorp Inc." },
-    { id: "c2", email: "maria@startup.io", password: "Password123", name: "Maria Garcia", role: "client", company: "Startup.io" },
-    { id: "c3", email: "robert@datadriven.com", password: "Password123", name: "Robert Wilson", role: "client", company: "DataDriven Co." },
-  ]);
+  // Profiles of the OTHER party in each of the current user's conversations.
+  // Populated as a side-effect of the conversations load below, so the chat UI
+  // can render names instead of UUIDs.
+  // Pre-migration this was a hardcoded array of three demo clients (c1/c2/c3)
+  // that doesn't correspond to any real Supabase user -- chat with real
+  // clients displayed "Unknown" because nothing in the array matched. Now it's
+  // built from public.profiles rows surfaced via the conversation_participants
+  // -> profiles embedded join.
+  const [messageProfiles, setMessageProfiles] = useState([]);
   const [toasts, setToasts] = useState([]);
   const [notifications, setNotifications] = useState([
     { id: "n1", userId: "c1", type: "bid", title: "New bid received", message: "Sarah Chen placed a bid on \"Full Stack Developer for E-commerce Platform\"", read: false, createdAt: Date.now() - 86400000 }
@@ -338,20 +342,132 @@ export default function BridgeOfTalentApp() {
     setNotifications(prev => prev.map(n => n.userId === currentUser.id ? { ...n, read: true } : n));
   }, [currentUser]);
 
-  const getOrCreateConversation = useCallback((otherUserId) => {
-    const existing = conversations.find(c => c.participantIds.includes(currentUser?.id) && c.participantIds.includes(otherUserId));
-    if (existing) return existing.id;
-    const newId = generateId();
-    setConversations(prev => [...prev, { id: newId, participantIds: [currentUser?.id, otherUserId].filter(Boolean), messages: [] }]);
-    return newId;
-  }, [conversations, currentUser?.id]);
+  // DB row -> in-memory message shape used by MessagesPage. Pre-migration the
+  // shape was { id, senderId, text, createdAt }; preserved exactly so no UI
+  // consumer changes.
+  const dbRowToMessage = useCallback((row) => ({
+    id: row.id,
+    senderId: row.sender_id,
+    text: row.text || "",
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  }), []);
 
-  const sendMessage = useCallback((conversationId, text) => {
+  // DB row (with embedded participants and messages) -> in-memory
+  // conversation shape. The embedded join is constructed in the load effect
+  // below via PostgREST's "*,conversation_participants(...,profiles(...))"
+  // syntax; this mapper just flattens it.
+  const dbRowToConversation = useCallback((row) => ({
+    id: row.id,
+    participantIds: (row.conversation_participants || []).map(p => p.profile_id),
+    messages: (row.messages || [])
+      .map(dbRowToMessage)
+      .sort((a, b) => a.createdAt - b.createdAt),
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  }), [dbRowToMessage]);
+
+  // getOrCreateConversation -- async, DB-backed.
+  //
+  // 1. Local-state shortcut: if we already know about a conversation that
+  //    contains both participants, return its id without a roundtrip. This
+  //    is also the dedup guard -- the DB has no unique constraint on
+  //    (participantA, participantB) pairs, so two near-simultaneous clicks
+  //    could create duplicates. Local-state check covers the common case;
+  //    racing across devices would still be possible.
+  // 2. Otherwise INSERT a conversation, then batch-INSERT both
+  //    conversation_participants rows. The conversation INSERT must complete
+  //    first since the participants table FKs against it.
+  // 3. Update local state and resolve with the new id.
+  const getOrCreateConversation = useCallback(async (otherUserId) => {
+    if (!currentUser?.id || !otherUserId) return null;
+
+    const existing = conversations.find(c =>
+      c.participantIds?.includes(currentUser.id) && c.participantIds?.includes(otherUserId)
+    );
+    if (existing) return existing.id;
+
+    const { data: convRows, error: convErr } = await supabaseAuthFetch(
+      "POST", "conversations?select=*", {}
+    );
+    if (convErr) {
+      addToast(convErr.message || "Couldn't start conversation", "error");
+      return null;
+    }
+    const convRow = Array.isArray(convRows) ? convRows[0] : convRows;
+    if (!convRow?.id) {
+      addToast("Couldn't start conversation -- please try again", "error");
+      return null;
+    }
+
+    const { error: partErr } = await supabaseAuthFetch(
+      "POST", "conversation_participants",
+      [
+        { conversation_id: convRow.id, profile_id: currentUser.id },
+        { conversation_id: convRow.id, profile_id: otherUserId },
+      ]
+    );
+    if (partErr) {
+      // Conversation row exists but is orphaned (no participants -> nobody
+      // can see it via RLS, including us on next reload). Surfacing as a
+      // toast since the user should retry rather than think their message
+      // went somewhere.
+      addToast("Couldn't add participants to conversation", "error");
+      return null;
+    }
+
+    setConversations(prev => [
+      ...prev,
+      {
+        id: convRow.id,
+        participantIds: [currentUser.id, otherUserId],
+        messages: [],
+        createdAt: convRow.created_at ? new Date(convRow.created_at).getTime() : Date.now(),
+      },
+    ]);
+    return convRow.id;
+  }, [conversations, currentUser?.id, addToast]);
+
+  // sendMessage -- optimistic. The message appears in the UI immediately
+  // with a temp id; if the DB INSERT fails it's removed and a toast fires.
+  // Optimistic is the right call for chat (users expect instant feedback);
+  // pessimistic would feel laggy at 100-200ms RTT.
+  const sendMessage = useCallback(async (conversationId, text) => {
     const safe = sanitizeMessage(text);
-    if (!safe || !currentUser) return;
-    const msg = { id: generateId(), senderId: currentUser.id, text: safe, createdAt: Date.now() };
-    setConversations(prev => prev.map(c => c.id === conversationId ? { ...c, messages: [...(c.messages || []), msg] } : c));
-  }, [currentUser]);
+    if (!safe || !currentUser?.id) return;
+
+    const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tempMsg = { id: tempId, senderId: currentUser.id, text: safe, createdAt: Date.now() };
+
+    setConversations(prev => prev.map(c =>
+      c.id === conversationId
+        ? { ...c, messages: [...(c.messages || []), tempMsg] }
+        : c
+    ));
+
+    const { data: rows, error } = await supabaseAuthFetch(
+      "POST",
+      "messages?select=*",
+      { conversation_id: conversationId, sender_id: currentUser.id, text: safe }
+    );
+
+    if (error) {
+      setConversations(prev => prev.map(c =>
+        c.id === conversationId
+          ? { ...c, messages: (c.messages || []).filter(m => m.id !== tempId) }
+          : c
+      ));
+      addToast(error.message || "Failed to send message", "error");
+      return;
+    }
+
+    const inserted = Array.isArray(rows) ? rows[0] : rows;
+    if (!inserted) return; // Server returned 200 with no row; leave temp in place rather than losing the message visually.
+    const realMsg = dbRowToMessage(inserted);
+    setConversations(prev => prev.map(c =>
+      c.id === conversationId
+        ? { ...c, messages: (c.messages || []).map(m => m.id === tempId ? realMsg : m) }
+        : c
+    ));
+  }, [currentUser?.id, addToast, dbRowToMessage]);
 
   const addToast = useCallback((message, type = "info") => {
     const id = generateId();
@@ -644,6 +760,58 @@ export default function BridgeOfTalentApp() {
     })();
     return () => { cancelled = true; };
   }, [dbRowToProject]);
+
+  // Load every conversation the current user participates in, along with its
+  // participants (with their profiles, used for name lookup in chat) and
+  // every message in the conversation. RLS on the three tables filters this
+  // down to only conversations where auth.uid() is a participant, so a single
+  // unfiltered SELECT is correct and safe.
+  //
+  // The embedded resource syntax does the joins server-side -- one round
+  // trip returns the entire chat history for this user. For a small user
+  // base this is fine; if conversations or message volume grows large, swap
+  // to lazy-loading messages on conversation select.
+  //
+  // KNOWN LIMITATION: no realtime. If the other party sends a message while
+  // this user has the Messages page open, it won't appear until they
+  // refresh or navigate away and back. Supabase Realtime subscriptions on
+  // the `messages` table would close this gap; left out of this migration
+  // to keep the diff focused.
+  useEffect(() => {
+    if (!currentUser?.id) {
+      setConversations([]);
+      setMessageProfiles([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      const { data: rows, error } = await supabaseAuthFetch(
+        "GET",
+        "conversations?select=*,conversation_participants(profile_id,profiles(id,name,role,company)),messages(*)&order=created_at.desc"
+      );
+      if (cancelled) return;
+      if (error) {
+        // Non-fatal: chat just stays empty.
+        // eslint-disable-next-line no-console
+        console.warn("Conversations fetch error:", error.message);
+        return;
+      }
+
+      // Build the profile cache used by MessagesPage for participant names.
+      // Deduped by id since the same profile can appear in multiple convs.
+      const profileMap = new Map();
+      for (const conv of (rows || [])) {
+        for (const p of (conv.conversation_participants || [])) {
+          if (p.profiles?.id) {
+            profileMap.set(p.profiles.id, p.profiles);
+          }
+        }
+      }
+      setMessageProfiles(Array.from(profileMap.values()));
+      setConversations((rows || []).map(dbRowToConversation));
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser?.id, dbRowToConversation]);
 
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
@@ -1483,9 +1651,9 @@ export default function BridgeOfTalentApp() {
       {page === "dashboard" && <DashboardPage freelancer={currentFreelancer} jobs={jobs} projects={projects} onNavigate={navigate} profileViews={profileViews} activityLog={activityLog} recommendedJobs={recommendedJobs} />}
       {page === "client-dashboard" && <ClientDashboardPage jobs={jobs} projects={projects} currentUser={currentUser} onNavigate={navigate} freelancers={freelancers} talentPools={talentPools} onAddPool={addTalentPool} onAddToPool={addFreelancerToPool} onRemoveFromPool={removeFreelancerFromPool} activityLog={activityLog} />}
       {page === "freelancers" && <FreelancersPage freelancers={freelancers} loading={freelancersLoading} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
-      {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={(freelancerId) => { const convId = getOrCreateConversation(freelancerId); setSelectedConversationId(convId); setPage("messages"); }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
-      {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} users={users} freelancers={freelancers} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} getOrCreateConversation={getOrCreateConversation} onNavigate={navigate} />}
-      {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={(otherId) => { const cid = getOrCreateConversation(otherId); setSelectedConversationId(cid); setPage("messages"); }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
+      {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={async (freelancerId) => { const convId = await getOrCreateConversation(freelancerId); if (convId) { setSelectedConversationId(convId); setPage("messages"); } }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
+      {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} profiles={messageProfiles} freelancers={freelancers} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} onNavigate={navigate} />}
+      {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
       {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancers} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
       {page === "post-job" && <PostJobPage onPost={handlePostJob} onNavigate={navigate} />}
       {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancers} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} getInvoiceSummary={getInvoiceSummary} />}
@@ -2648,16 +2816,21 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
 // ============================================================================
 // MESSAGES PAGE (Chat)
 // ============================================================================
-function MessagesPage({ currentUser, conversations, users, freelancers, selectedConversationId, onSelectConversation, onSendMessage, getOrCreateConversation, onNavigate }) {
+function MessagesPage({ currentUser, conversations, profiles, freelancers, selectedConversationId, onSelectConversation, onSendMessage, onNavigate }) {
   const [messageInput, setMessageInput] = useState("");
   const myConversations = (conversations || []).filter(c => c.participantIds?.includes(currentUser?.id));
   const selectedConv = myConversations.find(c => c.id === selectedConversationId);
 
   const getParticipantName = (conv) => {
     const otherId = conv.participantIds?.find(id => id !== currentUser?.id);
-    const u = users?.find(x => x.id === otherId);
+    // Lookup order: profiles cache (covers clients, who aren't in freelancers)
+    // -> freelancers list (covers freelancers; their `name` is hydrated from
+    // the matching profile row in hydrateFreelancer). Either should yield a
+    // name for any participant in a conversation surfaced by RLS.
+    const p = profiles?.find(x => x.id === otherId);
+    if (p?.name) return p.name;
     const f = freelancers?.find(x => x.id === otherId);
-    return u?.name || f?.name || "Unknown";
+    return f?.name || "Unknown";
   };
 
   const handleSend = () => {
