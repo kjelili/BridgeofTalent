@@ -1765,7 +1765,7 @@ export default function BridgeOfTalentApp() {
       {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancersWithRatings} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
       {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancersWithRatings} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
       {page === "post-job" && <PostJobPage onPost={handlePostJob} onNavigate={navigate} />}
-      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancersWithRatings} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} />}
+      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancersWithRatings} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} />}
       {page === "about" && <AboutPage onNavigate={navigate} />}
       {page === "shortcuts" && <ShortcutsPage onNavigate={navigate} />}
       {page === "compare" && <ComparePage freelancers={freelancersWithRatings} compareIds={compareFreelancerIds} onClear={() => setCompareFreelancerIds([])} onNavigate={navigate} onViewProfile={viewProfile} />}
@@ -2390,7 +2390,10 @@ function ClientDashboardPage({ jobs, projects, currentUser, onNavigate, freelanc
   const [newPoolName, setNewPoolName] = useState("");
   const myJobs = jobs.filter(j => j.clientId === currentUser?.id);
   const openJobs = myJobs.filter(j => j.status === "open");
-  const totalBids = myJobs.reduce((acc, j) => acc + (j.bids?.length || 0), 0);
+  // "Incoming Bids" = bids still awaiting the client's decision (pending),
+  // not a cumulative lifetime count -- so it drops as bids are accepted or
+  // rejected and reads as "needs your attention".
+  const pendingBids = myJobs.reduce((acc, j) => acc + (j.bids?.filter(b => b.status === "pending").length || 0), 0);
   const myProjects = projects.filter(p => p.clientId === currentUser?.id);
   const activeProjects = myProjects.filter(p => p.status === "active");
   const totalSpending = myProjects.reduce((acc, p) => acc + (p.budget || 0), 0);
@@ -2410,7 +2413,7 @@ function ClientDashboardPage({ jobs, projects, currentUser, onNavigate, freelanc
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 16, marginBottom: 24 }}>
         {[
           { label: "Posted Jobs", value: openJobs.length, sub: `${myJobs.length - openJobs.length} closed`, color: "var(--brand-600)" },
-          { label: "Incoming Bids", value: totalBids, color: "var(--accent)" },
+          { label: "Incoming Bids", value: pendingBids, color: "var(--accent)" },
           { label: "Active Projects", value: activeProjects.length, color: "var(--success)" },
           { label: "Total Spending", value: `$${totalSpending.toLocaleString()}`, color: "var(--gray-800)" },
         ].map((s, i) => (
@@ -3011,14 +3014,18 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
       const matchBudgetMin = !budgetMin || (j.budgetMax != null && j.budgetMax >= Number(budgetMin));
       const matchBudgetMax = !budgetMax || (j.budgetMin != null && j.budgetMin <= Number(budgetMax));
       const matchSkill = !skillFilter || (j.skills || []).some(s => s.toLowerCase() === skillFilter.toLowerCase());
-      return matchSearch && matchCategory && matchBudgetMin && matchBudgetMax && matchSkill && j.status === "open";
+      // Public marketplace shows only open jobs. The owner additionally sees
+      // their own jobs whatever the status, so a closed job remains reachable
+      // (e.g. from the dashboard's "View / Manage Bids") instead of vanishing.
+      const visible = j.status === "open" || j.clientId === currentUser?.id;
+      return matchSearch && matchCategory && matchBudgetMin && matchBudgetMax && matchSkill && visible;
     });
     if (sortBy === "newest") list = [...list].sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
     else if (sortBy === "budget-high") list = [...list].sort((a, b) => (b.budgetMax || 0) - (a.budgetMax || 0));
     else if (sortBy === "budget-low") list = [...list].sort((a, b) => (a.budgetMin || 0) - (b.budgetMin || 0));
     else if (sortBy === "deadline") list = [...list].sort((a, b) => (a.deadline || 0) - (b.deadline || 0));
     return list;
-  }, [jobs, search, category, budgetMin, budgetMax, skillFilter, sortBy]);
+  }, [jobs, search, category, budgetMin, budgetMax, skillFilter, sortBy, currentUser]);
 
   const submitBid = (jobId) => {
     if (!currentUser) { onNavigate("login"); return; }
@@ -3084,7 +3091,7 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
         <p style={{ fontSize: 14, color: "var(--gray-400)" }}>
           {loading && jobs.length === 0
             ? "Loading jobs..."
-            : `Showing ${filtered.length} open job${filtered.length !== 1 ? "s" : ""}`}
+            : `Showing ${filtered.length} job${filtered.length !== 1 ? "s" : ""}`}
         </p>
         {onSaveSearch && (search || (category && category !== "all") || budgetMin || budgetMax || skillFilter) && (
           <button
@@ -3106,6 +3113,7 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                     <h3 style={{ fontSize: 18, fontWeight: 700, color: "var(--gray-900)" }}>{j.title}</h3>
                     {j.teamSize > 1 && <span style={{ padding: "3px 10px", borderRadius: var_radius_full, fontSize: 11, fontWeight: 600, background: "var(--accent-light)", color: "var(--accent)", display: "inline-flex", alignItems: "center", gap: 4 }}><Icons.Users /> Team of {j.teamSize}</span>}
+                    {j.status !== "open" && <span style={{ padding: "3px 10px", borderRadius: var_radius_full, fontSize: 11, fontWeight: 600, background: "var(--gray-100)", color: "var(--gray-500)" }}>{j.status}</span>}
                   </div>
                   <p style={{ fontSize: 13, color: "var(--gray-500)" }}>{j.clientName}</p>
                 </div>
@@ -3321,7 +3329,7 @@ function PostJobPage({ onPost, onNavigate }) {
 // ============================================================================
 // PROJECTS PAGE
 // ============================================================================
-function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate, onReleaseEscrow, disputes = {}, onRaiseDispute, onResolveDispute }) {
+function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate, onReleaseEscrow, disputes = {}, onRaiseDispute, onResolveDispute, onOpenMessage }) {
   const [showCreate, setShowCreate] = useState(false);
   const [data, setData] = useState({ title: "", description: "", budget: "", category: "Web Development", members: [] });
   const [disputeProjectId, setDisputeProjectId] = useState(null);
@@ -3499,14 +3507,31 @@ function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate
               <div style={{ display: "flex", gap: 6 }}>
                 {p.members?.map(mId => {
                   const f = freelancers.find(fl => fl.id === mId);
-                  return f ? (
-                    <div key={mId} title={f.name} style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg, var(--brand-500), var(--accent))", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 11, border: "2px solid white" }}>{f.avatar}</div>
-                  ) : null;
+                  if (!f) return null;
+                  const isSelf = mId === currentUser?.id;
+                  const avatar = (
+                    <div title={isSelf ? f.name : `Message ${f.name}`} style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg, var(--brand-500), var(--accent))", display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontWeight: 700, fontSize: 11, border: "2px solid white" }}>{f.avatar}</div>
+                  );
+                  // Clickable to start a chat unless it's the viewer themselves.
+                  return isSelf || !onOpenMessage ? (
+                    <div key={mId}>{avatar}</div>
+                  ) : (
+                    <button key={mId} onClick={() => onOpenMessage(mId)} style={{ background: "none", border: "none", padding: 0, cursor: "pointer" }}>{avatar}</button>
+                  );
                 })}
               </div>
             </div>
+            {/* Freelancer viewing their own project: quick way to message the client. */}
+            {currentUser?.role === "freelancer" && p.members?.includes(currentUser.id) && p.clientId && onOpenMessage && (
+              <div style={{ marginTop: 8 }}>
+                <button onClick={() => onOpenMessage(p.clientId)} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}><Icons.MessageCircle /> Message client</button>
+              </div>
+            )}
             {currentUser?.role === "client" && p.clientId === currentUser.id && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 8, alignItems: "center" }}>
+                {p.members?.length > 0 && onOpenMessage && (
+                  <button onClick={() => onOpenMessage(p.members[0])} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 6 }}><Icons.MessageCircle /> Message freelancer</button>
+                )}
                 {!p.escrowReleased && (
                   <button onClick={() => onReleaseEscrow?.(p.id)} style={{ ...btnStyle, ...btnPrimary, padding: "8px 14px", fontSize: 12 }}>Release payment (Escrow)</button>
                 )}
