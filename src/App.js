@@ -237,7 +237,7 @@ export default function BridgeOfTalentApp() {
   const PAGE_STORAGE_KEY = "bridgeoftalent-current-page";
   const SELECTED_FREELANCER_STORAGE_KEY = "bridgeoftalent-selected-freelancer";
   const RESTORABLE_PAGES = new Set([
-    "dashboard", "jobs", "freelancers", "saved", "messages",
+    "dashboard", "client-dashboard", "jobs", "freelancers", "saved", "messages",
     "projects", "about", "profile",
   ]);
   const [page, setPage] = useState(() => {
@@ -1703,11 +1703,6 @@ export default function BridgeOfTalentApp() {
     addToast("Dispute marked resolved.", "success");
   }, [addToast]);
 
-  const getInvoiceSummary = useCallback((project) => {
-    const lines = [`Invoice – ${project?.title || "Project"}`, `Client: ${project?.clientName || ""}`, `Amount: $${(project?.budget || 0).toLocaleString()}`, `Status: ${project?.status || "active"}`, `Date: ${new Date(project?.createdAt || 0).toLocaleDateString()}`];
-    return lines.join("\n");
-  }, []);
-
   useEffect(() => {
     const h = (e) => {
       if (e.target.tagName === "INPUT" || e.target.tagName === "TEXTAREA") return;
@@ -1770,7 +1765,7 @@ export default function BridgeOfTalentApp() {
       {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancersWithRatings} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
       {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancersWithRatings} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
       {page === "post-job" && <PostJobPage onPost={handlePostJob} onNavigate={navigate} />}
-      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancersWithRatings} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} getInvoiceSummary={getInvoiceSummary} />}
+      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancersWithRatings} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} />}
       {page === "about" && <AboutPage onNavigate={navigate} />}
       {page === "shortcuts" && <ShortcutsPage onNavigate={navigate} />}
       {page === "compare" && <ComparePage freelancers={freelancersWithRatings} compareIds={compareFreelancerIds} onClear={() => setCompareFreelancerIds([])} onNavigate={navigate} onViewProfile={viewProfile} />}
@@ -3326,7 +3321,7 @@ function PostJobPage({ onPost, onNavigate }) {
 // ============================================================================
 // PROJECTS PAGE
 // ============================================================================
-function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate, onReleaseEscrow, disputes = {}, onRaiseDispute, onResolveDispute, getInvoiceSummary }) {
+function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate, onReleaseEscrow, disputes = {}, onRaiseDispute, onResolveDispute }) {
   const [showCreate, setShowCreate] = useState(false);
   const [data, setData] = useState({ title: "", description: "", budget: "", category: "Web Development", members: [] });
   const [disputeProjectId, setDisputeProjectId] = useState(null);
@@ -3339,24 +3334,94 @@ function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate
     setData({ title: "", description: "", budget: "", category: "Web Development", members: [] });
   };
 
-  // Download the invoice as a .txt file. We build a Blob + object URL and click
-  // a temporary <a download> rather than window.open() on a data: URL --
-  // modern browsers (Chrome since ~2018) block top-level navigation to data:
-  // URLs for security, which is why the old approach opened a blank tab.
+  // Generate a styled invoice in a new window and trigger the browser's print
+  // dialog, where the user can "Save as PDF". This needs no PDF library (no
+  // new dependency, no build change) yet produces a clean, fully-styled PDF.
+  // We write self-contained HTML with inline CSS so the print window doesn't
+  // depend on the app's stylesheet.
   const downloadInvoice = (project) => {
-    const text = getInvoiceSummary?.(project) || "";
-    if (!text) return;
-    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    const safeName = (project?.title || "project").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
-    a.download = `invoice-${safeName}.txt`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    // Revoke on the next tick so the download has time to start.
-    setTimeout(() => URL.revokeObjectURL(url), 0);
+    if (!project) return;
+    const members = (project.members || [])
+      .map(id => (freelancers || []).find(f => f.id === id)?.name)
+      .filter(Boolean);
+    const freelancerLine = members.length ? members.join(", ") : "—";
+    const invoiceNo = `INV-${String(project.id || "").slice(0, 8).toUpperCase()}`;
+    const issued = new Date(project.createdAt || Date.now()).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+    const amount = Number(project.budget || 0);
+    const fee = Math.round(amount * 0.05 * 100) / 100;
+    const net = Math.round((amount - fee) * 100) / 100;
+    const money = (n) => "$" + Number(n).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    const statusLabel = project.escrowReleased ? "PAID" : "DUE";
+    const statusColor = project.escrowReleased ? "#16a34a" : "#d97706";
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>${esc(invoiceNo)}</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;color:#1f2937;padding:48px;max-width:760px;margin:0 auto;line-height:1.5}
+  .top{display:flex;justify-content:space-between;align-items:flex-start;border-bottom:3px solid #2563eb;padding-bottom:24px;margin-bottom:32px}
+  .brand{font-size:24px;font-weight:800;color:#2563eb;letter-spacing:-.5px}
+  .brand small{display:block;font-size:11px;font-weight:500;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-top:4px}
+  .inv-meta{text-align:right;font-size:13px;color:#6b7280}
+  .inv-meta .no{font-size:18px;font-weight:700;color:#111827;margin-bottom:4px}
+  .badge{display:inline-block;margin-top:8px;padding:4px 12px;border-radius:999px;font-size:12px;font-weight:700;letter-spacing:.5px;color:#fff;background:${statusColor}}
+  .parties{display:flex;justify-content:space-between;gap:32px;margin-bottom:32px}
+  .party{font-size:13px}
+  .party .label{font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9ca3af;font-weight:600;margin-bottom:6px}
+  .party .name{font-size:15px;font-weight:700;color:#111827}
+  table{width:100%;border-collapse:collapse;margin-bottom:24px}
+  th{text-align:left;font-size:11px;text-transform:uppercase;letter-spacing:1px;color:#9ca3af;font-weight:600;padding:10px 12px;border-bottom:2px solid #e5e7eb}
+  th.r,td.r{text-align:right}
+  td{padding:14px 12px;font-size:14px;border-bottom:1px solid #f3f4f6}
+  .totals{margin-left:auto;width:280px;font-size:14px}
+  .totals .row{display:flex;justify-content:space-between;padding:8px 12px}
+  .totals .grand{border-top:2px solid #e5e7eb;margin-top:4px;font-size:17px;font-weight:800;color:#111827}
+  .foot{margin-top:48px;padding-top:20px;border-top:1px solid #f3f4f6;font-size:12px;color:#9ca3af;text-align:center}
+  @media print{body{padding:24px}@page{margin:16mm}}
+</style></head><body>
+  <div class="top">
+    <div class="brand">BridgeofTalent<small>Freelance Marketplace</small></div>
+    <div class="inv-meta">
+      <div class="no">${esc(invoiceNo)}</div>
+      <div>Issued ${esc(issued)}</div>
+      <div class="badge">${esc(statusLabel)}</div>
+    </div>
+  </div>
+  <div class="parties">
+    <div class="party"><div class="label">From</div><div class="name">${esc(freelancerLine)}</div><div>Freelancer</div></div>
+    <div class="party" style="text-align:right"><div class="label">Bill to</div><div class="name">${esc(project.clientName || "Client")}</div><div>Client</div></div>
+  </div>
+  <table>
+    <thead><tr><th>Description</th><th class="r">Amount</th></tr></thead>
+    <tbody>
+      <tr><td><strong>${esc(project.title || "Project")}</strong><br><span style="color:#9ca3af;font-size:12px">Project status: ${esc(project.status || "active")}</span></td><td class="r">${money(amount)}</td></tr>
+    </tbody>
+  </table>
+  <div class="totals">
+    <div class="row"><span>Subtotal</span><span>${money(amount)}</span></div>
+    <div class="row"><span>Platform fee (5%)</span><span>−${money(fee)}</span></div>
+    <div class="row grand"><span>Net to freelancer</span><span>${money(net)}</span></div>
+  </div>
+  <div class="foot">Generated by BridgeofTalent · ${esc(invoiceNo)} · This document is a payment summary, not a tax invoice.</div>
+  <script>window.onload=function(){window.print();}</script>
+</body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) {
+      // Pop-up blocked. Fall back to a same-tab data download so the user
+      // still gets something rather than silent failure.
+      const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${invoiceNo}.html`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 0);
+      return;
+    }
+    w.document.open();
+    w.document.write(html);
+    w.document.close();
   };
 
   const toggleMember = (fId) => {
