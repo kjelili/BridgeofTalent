@@ -539,17 +539,21 @@ export default function BridgeOfTalentApp() {
   }, [currentUser, addToast, dbRowToReview]);
 
   const releaseEscrow = useCallback(async (projectId) => {
+    // Releasing escrow is the completion event for this app's model: there's a
+    // single flat payout per project (no milestones), so paying the freelancer
+    // means the work is accepted and the project is done. Flip both flags in
+    // one PATCH so status and escrow stay consistent.
     const { error } = await supabaseAuthFetch(
       "PATCH",
       `projects?id=eq.${projectId}`,
-      { escrow_released: true }
+      { escrow_released: true, status: "completed" }
     );
     if (error) {
       addToast(error.message || "Failed to release payment", "error");
       return;
     }
-    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, escrowReleased: true } : p));
-    addToast("Payment released to freelancer(s)", "success");
+    setProjects(prev => prev.map(p => p.id === projectId ? { ...p, escrowReleased: true, status: "completed" } : p));
+    addToast("Payment released — project marked complete", "success");
   }, [addToast]);
 
   const navigate = useCallback((p) => {
@@ -2459,7 +2463,7 @@ function ClientDashboardPage({ jobs, projects, currentUser, onNavigate, freelanc
                 <div style={{ fontSize: 14, fontWeight: 600, color: "var(--gray-900)" }}>{p.title}</div>
                 <div style={{ fontSize: 12, color: "var(--gray-500)" }}>${p.budget?.toLocaleString()} · {p.members?.length || 0} member(s)</div>
               </div>
-              <span style={{ padding: "4px 10px", borderRadius: var_radius_full, fontSize: 11, fontWeight: 600, background: "var(--success-light)", color: "var(--success)" }}>{p.status}</span>
+              <span style={{ padding: "4px 10px", borderRadius: var_radius_full, fontSize: 11, fontWeight: 600, background: p.status === "active" ? "var(--success-light)" : "var(--gray-100)", color: p.status === "active" ? "var(--success)" : "var(--gray-500)" }}>{p.status}</span>
             </div>
           ))
         )}
