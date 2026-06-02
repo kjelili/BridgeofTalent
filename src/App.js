@@ -324,10 +324,11 @@ export default function BridgeOfTalentApp() {
   }, [page, currentUser]);
   useEffect(() => { try { localStorage.setItem("bridgeoftalent-pools", JSON.stringify(talentPools)); } catch (_) {} }, [talentPools]);
   useEffect(() => { try { localStorage.setItem("bridgeoftalent-saved-searches", JSON.stringify(savedSearches)); } catch (_) {} }, [savedSearches]);
-  const [reviews, setReviews] = useState([
-    { id: "r1", freelancerId: "f1", clientId: "c1", clientName: "TechCorp Inc.", rating: 5, comment: "Excellent work on our e-commerce platform. Delivered on time and exceeded expectations.", createdAt: Date.now() - 86400000 * 30 },
-    { id: "r2", freelancerId: "f1", clientId: "c2", clientName: "Startup.io", rating: 5, comment: "Sarah is a top-tier developer. Would hire again.", createdAt: Date.now() - 86400000 * 45 },
-  ]);
+  // Reviews load from public.reviews via the fetch effect below. Pre-migration
+  // this held two hardcoded demo reviews for freelancer "f1" (a seed id that
+  // doesn't exist in the real DB), so they never displayed for real
+  // freelancers anyway. Kept as an empty array so useState(...) is unchanged.
+  const [reviews, setReviews] = useState([]);
 
   const addNotification = useCallback((userId, type, title, message) => {
     setNotifications(prev => [...prev, { id: generateId(), userId, type, title, message, read: false, createdAt: Date.now() }]);
@@ -359,6 +360,18 @@ export default function BridgeOfTalentApp() {
     id: row.id,
     senderId: row.sender_id,
     text: row.text || "",
+    createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
+  }), []);
+
+  // DB row -> in-memory review shape used by ProfilePage. Field names match
+  // the pre-migration shape so the UI consumer is unchanged.
+  const dbRowToReview = useCallback((row) => ({
+    id: row.id,
+    freelancerId: row.freelancer_id,
+    clientId: row.client_id,
+    clientName: row.client_name || "",
+    rating: Number(row.rating) || 0,
+    comment: row.comment || "",
     createdAt: row.created_at ? new Date(row.created_at).getTime() : Date.now(),
   }), []);
 
@@ -479,17 +492,51 @@ export default function BridgeOfTalentApp() {
     ));
   }, [currentUser?.id, addToast, dbRowToMessage]);
 
-  const addReview = useCallback((freelancerId, rating, comment) => {
+  // REVIEWS — persisted to public.reviews. RLS: public read, and a client can
+  // only insert a row where client_id = their own auth.uid() (see migration
+  // 0001). The "must have worked together" business rule is enforced in the
+  // UI (ProfilePage's hasWorkedWith gate), not in RLS -- RLS just pins
+  // authorship. The reviews SELECT policy is `using (true)`, so the row is
+  // visible to the author immediately and INSERT...RETURNING * won't trip the
+  // 42501 visibility error we hit on conversations.
+  //
+  // The freelancer's displayed rating/reviewCount is recomputed optimistically
+  // here and authoritatively from the DB in the reviews-load effect below.
+  const addReview = useCallback(async (freelancerId, rating, comment) => {
+    if (!currentUser?.id) {
+      addToast("You must be signed in to leave a review", "error");
+      return;
+    }
     const { rating: r, comment: c } = sanitizeReviewInput({ rating, comment });
-    setReviews(prev => [...prev, { id: generateId(), freelancerId, clientId: currentUser?.id, clientName: currentUser?.company || currentUser?.name, rating: r, comment: c, createdAt: Date.now() }]);
-    setFreelancers(prev => prev.map(f => {
-      if (f.id !== freelancerId) return f;
-      const n = (f.reviewCount || 0) + 1;
-      const newAvg = ((f.rating || 0) * (f.reviewCount || 0) + r) / n;
-      return { ...f, reviewCount: n, rating: Math.round(newAvg * 10) / 10 };
-    }));
+    const clientName = sanitizeString(currentUser.company || currentUser.name, LIMITS.NAME);
+
+    const { data: rows, error } = await supabaseAuthFetch(
+      "POST",
+      "reviews?select=*",
+      {
+        freelancer_id: freelancerId,
+        client_id: currentUser.id,
+        client_name: clientName,
+        rating: r,
+        comment: c,
+      }
+    );
+    if (error) {
+      addToast(error.message || "Failed to submit review", "error");
+      return;
+    }
+    const inserted = Array.isArray(rows) ? rows[0] : rows;
+    if (!inserted) {
+      addToast("Review didn't save -- please try again", "error");
+      return;
+    }
+
+    setReviews(prev => [...prev, dbRowToReview(inserted)]);
+    // No freelancer-rating mutation here: ProfilePage derives the displayed
+    // rating from the reviews list, so pushing the new review above is enough
+    // for the average to update immediately.
     addToast("Review submitted!", "success");
-  }, [currentUser, addToast]);
+  }, [currentUser, addToast, dbRowToReview]);
 
   const releaseEscrow = useCallback(async (projectId) => {
     const { error } = await supabaseAuthFetch(
@@ -764,6 +811,40 @@ export default function BridgeOfTalentApp() {
     })();
     return () => { cancelled = true; };
   }, [dbRowToProject]);
+
+  // One-time fetch of every review on mount. Public-read RLS (migration 0001)
+  // means everyone gets the full set, which is correct -- reviews are public
+  // social proof on freelancer profiles.
+  //
+  // We deliberately do NOT mutate freelancers.rating from here. An earlier
+  // approach did, but it raced the freelancers-load effect: whichever
+  // setFreelancers ran second won, so the recomputed rating could be silently
+  // overwritten by the raw DB column (or vice versa) depending on network
+  // timing. Instead ProfilePage derives the displayed rating from the loaded
+  // reviews at render time (see displayRating there), which is inherently
+  // order-independent.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data, error } = await supabase
+          .from("reviews")
+          .select("*")
+          .order("created_at", { ascending: false });
+        if (cancelled) return;
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.warn("Reviews fetch error:", error.message);
+          return;
+        }
+        setReviews((data || []).map(dbRowToReview));
+      } catch (e) {
+        // eslint-disable-next-line no-console
+        console.warn("Reviews fetch threw:", e?.message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [dbRowToReview]);
 
   // Load every conversation the current user participates in, along with its
   // participants (with their profiles, used for name lookup in chat) and
@@ -2560,6 +2641,15 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const freelancerReviews = (reviews || []).filter(r => r.freelancerId === freelancer?.id);
+  // Derive the displayed rating from the loaded reviews rather than trusting
+  // freelancer.rating (which can be stale relative to public.reviews). When
+  // there are no loaded reviews yet, fall back to the stored column so the
+  // profile doesn't flash "0" during load.
+  const displayCount = freelancerReviews.length;
+  const displayRating = displayCount > 0
+    ? Math.round((freelancerReviews.reduce((s, r) => s + (Number(r.rating) || 0), 0) / displayCount) * 10) / 10
+    : (Number(freelancer?.rating) || 0);
+  const displayReviewCount = displayCount > 0 ? displayCount : (Number(freelancer?.reviewCount) || 0);
   const hasWorkedWith = currentUser?.role === "client" && (projects || []).some(p => p.clientId === currentUser?.id && p.members?.includes(freelancer?.id));
   const hasReviewed = (reviews || []).some(r => r.freelancerId === freelancer?.id && r.clientId === currentUser?.id);
 
@@ -2733,7 +2823,7 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
             </div>
             <p style={{ fontSize: 17, color: "var(--gray-600)", marginBottom: 12 }}>{freelancer.title}</p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", fontSize: 14 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--warning)" }}><Icons.Star /> {freelancer.rating} ({freelancer.reviewCount} reviews)</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--warning)" }}><Icons.Star /> {displayRating} ({displayReviewCount} reviews)</span>
               <span style={{ fontWeight: 700, color: "var(--gray-800)", fontFamily: "var(--font-mono)" }}>${freelancer.hourlyRate}/hr</span>
               {freelancer.location && <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--gray-500)" }}><Icons.MapPin /> {freelancer.location}</span>}
               <span style={{ padding: "4px 10px", borderRadius: var_radius_full, fontSize: 12, fontWeight: 600, background: freelancer.status === "available" ? "var(--success-light)" : "var(--warning-light)", color: freelancer.status === "available" ? "var(--success)" : "var(--warning)" }}>{freelancer.status}</span>
