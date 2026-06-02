@@ -3339,6 +3339,26 @@ function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate
     setData({ title: "", description: "", budget: "", category: "Web Development", members: [] });
   };
 
+  // Download the invoice as a .txt file. We build a Blob + object URL and click
+  // a temporary <a download> rather than window.open() on a data: URL --
+  // modern browsers (Chrome since ~2018) block top-level navigation to data:
+  // URLs for security, which is why the old approach opened a blank tab.
+  const downloadInvoice = (project) => {
+    const text = getInvoiceSummary?.(project) || "";
+    if (!text) return;
+    const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const safeName = (project?.title || "project").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+    a.download = `invoice-${safeName}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    // Revoke on the next tick so the download has time to start.
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+  };
+
   const toggleMember = (fId) => {
     setData(d => ({
       ...d,
@@ -3426,7 +3446,7 @@ function ProjectsPage({ projects, freelancers, currentUser, onCreate, onNavigate
                   <button onClick={() => onReleaseEscrow?.(p.id)} style={{ ...btnStyle, ...btnPrimary, padding: "8px 14px", fontSize: 12 }}>Release payment (Escrow)</button>
                 )}
                 {p.escrowReleased && <span style={{ fontSize: 12, color: "var(--success)", fontWeight: 600 }}>Payment released</span>}
-                <button onClick={() => window.open("data:text/plain;charset=utf-8," + encodeURIComponent(getInvoiceSummary?.(p) || ""), "_blank")} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 12 }}>Download invoice</button>
+                <button onClick={() => downloadInvoice(p)} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 12 }}>Download invoice</button>
                 {!(disputes[p.id]?.status === "raised" || disputes[p.id]?.status === "resolved") && (
                   <button onClick={() => setDisputeProjectId(disputeProjectId === p.id ? null : p.id)} style={{ ...btnStyle, ...btnSecondary, padding: "8px 14px", fontSize: 12, color: "var(--error)" }}>Raise dispute</button>
                 )}
