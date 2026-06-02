@@ -3003,6 +3003,7 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
   const [bidJobId, setBidJobId] = useState(null);
   const [bidAmount, setBidAmount] = useState("");
   const [bidMessage, setBidMessage] = useState("");
+  const [bidTimeline, setBidTimeline] = useState("");
 
   const filtered = useMemo(() => {
     let list = jobs.filter(j => {
@@ -3023,10 +3024,14 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
   const submitBid = (jobId) => {
     if (!currentUser) { onNavigate("login"); return; }
     if (!bidAmount) return;
-    onBid(jobId, { amount: Number(bidAmount), message: bidMessage, timeline: "As specified" });
+    // sanitizeBidInput trims/caps timeline server-side; fall back to a neutral
+    // default if the freelancer left it blank so the bid still reads sensibly.
+    const timeline = bidTimeline.trim() || "As specified";
+    onBid(jobId, { amount: Number(bidAmount), message: bidMessage, timeline });
     setBidJobId(null);
     setBidAmount("");
     setBidMessage("");
+    setBidTimeline("");
   };
 
   return (
@@ -3152,7 +3157,7 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
                     </div>
                     <div>
                       <label style={labelStyle}>Delivery Timeline</label>
-                      <input placeholder="e.g. 4 weeks" style={inputStyle} />
+                      <input value={bidTimeline} onChange={e => setBidTimeline(e.target.value)} placeholder="e.g. 4 weeks" style={inputStyle} />
                     </div>
                   </div>
                   <div style={{ marginBottom: 12 }}>
@@ -3196,6 +3201,11 @@ function JobsPage({ jobs, loading = false, currentUser, onBid, onAcceptBid, onRe
                             <span style={{ padding: "2px 8px", borderRadius: var_radius_full, fontSize: 11, fontWeight: 600, background: status === "accepted" ? "var(--success-light)" : status === "rejected" ? "var(--error-light)" : "var(--warning-light)", color: status === "accepted" ? "var(--success)" : status === "rejected" ? "var(--error)" : "var(--warning)" }}>{status}</span>
                           </div>
                           {b.message && <p style={{ fontSize: 12, color: "var(--gray-500)", marginTop: 4 }}>{b.message}</p>}
+                          {b.timeline && b.timeline !== "As specified" && (
+                            <p style={{ fontSize: 12, color: "var(--gray-400)", marginTop: 4, display: "flex", alignItems: "center", gap: 4 }}>
+                              <Icons.Clock /> Timeline: {b.timeline}
+                            </p>
+                          )}
                         </div>
                         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                           <span style={{ fontSize: 15, fontWeight: 700, color: "var(--brand-600)", fontFamily: "var(--font-mono)" }}>${b.amount?.toLocaleString()}</span>
