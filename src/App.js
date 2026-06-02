@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import {
   sanitizeString,
   sanitizeEmail,
@@ -900,6 +900,70 @@ export default function BridgeOfTalentApp() {
     })();
     return () => { cancelled = true; };
   }, [currentUser?.id, dbRowToConversation]);
+
+  // Mirror of conversations for the polling closure to read without forcing
+  // the poll effect to re-subscribe on every message (which would happen if
+  // `conversations` were in its dependency array).
+  const conversationsRef = useRef(conversations);
+  useEffect(() => { conversationsRef.current = conversations; }, [conversations]);
+
+  // Lightweight polling for new messages in the open conversation. This is the
+  // pragmatic stand-in for true realtime: while the user is on the Messages
+  // page with a conversation selected AND the tab is visible, every few
+  // seconds we fetch only the messages newer than the newest one we already
+  // hold, and merge them in. Reuses the trusted supabaseAuthFetch REST path
+  // (not the SDK realtime channel), so it adds no new failure surface.
+  //
+  // Key safety properties:
+  //  - Scoped to the selected conversation only (not the whole graph).
+  //  - Fetches only rows with created_at > our newest known message, so the
+  //    payload is tiny and usually empty.
+  //  - MERGES rather than replaces, and dedups by id, so it never clobbers an
+  //    optimistic temp message that sendMessage is mid-way through confirming.
+  //  - Skips polling when the tab is hidden, to avoid pointless traffic.
+  useEffect(() => {
+    if (page !== "messages" || !selectedConversationId || !currentUser?.id) return;
+
+    let cancelled = false;
+
+    const poll = async () => {
+      if (cancelled) return;
+      if (typeof document !== "undefined" && document.hidden) return; // tab backgrounded
+
+      // Newest REAL (non-temp) message timestamp we hold for this conversation.
+      const conv = (conversationsRef.current || []).find(c => c.id === selectedConversationId);
+      let newest = 0;
+      if (conv) {
+        for (const m of (conv.messages || [])) {
+          if (typeof m.id === "string" && m.id.startsWith("tmp-")) continue;
+          if (m.createdAt > newest) newest = m.createdAt;
+        }
+      }
+
+      const sinceIso = newest ? new Date(newest).toISOString() : new Date(0).toISOString();
+      const path =
+        `messages?select=*&conversation_id=eq.${selectedConversationId}` +
+        `&created_at=gt.${encodeURIComponent(sinceIso)}&order=created_at.asc`;
+
+      const { data: rows, error } = await supabaseAuthFetch("GET", path);
+      if (cancelled || error || !Array.isArray(rows) || rows.length === 0) return;
+
+      const incoming = rows.map(dbRowToMessage);
+      setConversations(prev => prev.map(c => {
+        if (c.id !== selectedConversationId) return c;
+        const existingIds = new Set((c.messages || []).map(m => m.id));
+        const toAdd = incoming.filter(m => !existingIds.has(m.id));
+        if (toAdd.length === 0) return c;
+        const merged = [...(c.messages || []), ...toAdd].sort((a, b) => a.createdAt - b.createdAt);
+        return { ...c, messages: merged };
+      }));
+    };
+
+    // Poll every 4s. First tick after the interval (the initial load already
+    // has current data), so we don't double-fetch on open.
+    const timer = setInterval(poll, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [page, selectedConversationId, currentUser?.id, dbRowToMessage]);
 
   // ==========================================================================
   // AUTH — real Supabase authentication (replaces the in-memory demo).
