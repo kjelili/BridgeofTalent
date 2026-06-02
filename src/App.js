@@ -819,10 +819,9 @@ export default function BridgeOfTalentApp() {
   // We deliberately do NOT mutate freelancers.rating from here. An earlier
   // approach did, but it raced the freelancers-load effect: whichever
   // setFreelancers ran second won, so the recomputed rating could be silently
-  // overwritten by the raw DB column (or vice versa) depending on network
-  // timing. Instead ProfilePage derives the displayed rating from the loaded
-  // reviews at render time (see displayRating there), which is inherently
-  // order-independent.
+  // overwritten. Instead the freelancersWithRatings memo (defined in the main
+  // component) derives rating from reviews at render time and is passed to
+  // every page, which is inherently order-independent.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -1633,10 +1632,36 @@ export default function BridgeOfTalentApp() {
     navigate("projects");
   }, [currentUser, addToast, navigate, dbRowToProject]);
 
+  // Single source of truth for freelancer rating/reviewCount. The freelancers
+  // table's own rating/review_count columns aren't kept in sync when a review
+  // is written (no DB trigger), so we derive them from the loaded reviews and
+  // merge over the raw values here. Every consumer below (cards, profile,
+  // compare, recommendations, sorting) reads from this derived array rather
+  // than raw `freelancers`, so the displayed rating is consistent everywhere
+  // and there's no per-component derivation to keep in sync.
+  //
+  // Derived at render time, so it's independent of whether the freelancers
+  // fetch or the reviews fetch resolves first.
+  const freelancersWithRatings = useMemo(() => {
+    if (!reviews.length) return freelancers;
+    const agg = new Map(); // freelancerId -> { sum, count }
+    for (const rev of reviews) {
+      const cur = agg.get(rev.freelancerId) || { sum: 0, count: 0 };
+      cur.sum += Number(rev.rating) || 0;
+      cur.count += 1;
+      agg.set(rev.freelancerId, cur);
+    }
+    return freelancers.map(f => {
+      const a = agg.get(f.id);
+      if (!a) return f;
+      return { ...f, reviewCount: a.count, rating: Math.round((a.sum / a.count) * 10) / 10 };
+    });
+  }, [freelancers, reviews]);
+
   // Get freelancer profile for current user
   const currentFreelancer = useMemo(() =>
-    currentUser?.role === "freelancer" ? freelancers.find(f => f.id === currentUser.id) : null,
-    [currentUser, freelancers]
+    currentUser?.role === "freelancer" ? freelancersWithRatings.find(f => f.id === currentUser.id) : null,
+    [currentUser, freelancersWithRatings]
   );
 
   // Recommended jobs for freelancer (by skill match)
@@ -1647,12 +1672,12 @@ export default function BridgeOfTalentApp() {
 
   // Recommended freelancers for a job (by skill match) or top-rated
   const getRecommendedFreelancersForJob = useCallback((job) => {
-    if (!job?.skills?.length) return freelancers.slice(0, 4);
-    return [...freelancers]
+    if (!job?.skills?.length) return freelancersWithRatings.slice(0, 4);
+    return [...freelancersWithRatings]
       .filter(f => (f.skills || []).some(s => (job.skills || []).includes(s)))
       .sort((a, b) => (b.rating || 0) - (a.rating || 0))
       .slice(0, 4);
-  }, [freelancers]);
+  }, [freelancersWithRatings]);
 
   const addTalentPool = useCallback((name) => {
     if (!currentUser?.id) return;
@@ -1734,17 +1759,17 @@ export default function BridgeOfTalentApp() {
       {page === "login" && <LoginPage onLogin={handleLogin} onNavigate={navigate} />}
       {page === "register" && <RegisterPage onRegister={handleRegister} onNavigate={navigate} />}
       {page === "dashboard" && <DashboardPage freelancer={currentFreelancer} jobs={jobs} projects={projects} onNavigate={navigate} profileViews={profileViews} activityLog={activityLog} recommendedJobs={recommendedJobs} />}
-      {page === "client-dashboard" && <ClientDashboardPage jobs={jobs} projects={projects} currentUser={currentUser} onNavigate={navigate} freelancers={freelancers} talentPools={talentPools} onAddPool={addTalentPool} onAddToPool={addFreelancerToPool} onRemoveFromPool={removeFreelancerFromPool} activityLog={activityLog} />}
-      {page === "freelancers" && <FreelancersPage freelancers={freelancers} loading={freelancersLoading} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
-      {page === "profile" && <ProfilePage freelancer={freelancers.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={async (freelancerId) => { const convId = await getOrCreateConversation(freelancerId); if (convId) { setSelectedConversationId(convId); setPage("messages"); } }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
-      {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} profiles={messageProfiles} freelancers={freelancers} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} onNavigate={navigate} />}
-      {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancers} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
-      {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancers} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
+      {page === "client-dashboard" && <ClientDashboardPage jobs={jobs} projects={projects} currentUser={currentUser} onNavigate={navigate} freelancers={freelancersWithRatings} talentPools={talentPools} onAddPool={addTalentPool} onAddToPool={addFreelancerToPool} onRemoveFromPool={removeFreelancerFromPool} activityLog={activityLog} />}
+      {page === "freelancers" && <FreelancersPage freelancers={freelancersWithRatings} loading={freelancersLoading} onNavigate={navigate} onViewProfile={viewProfile} savedFreelancerIds={savedFreelancerIds} onToggleSaveFreelancer={toggleSaveFreelancer} compareIds={compareFreelancerIds} onCompare={(id) => setCompareFreelancerIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.length >= 2 ? [...prev.slice(1), id] : [...prev, id])} onNavigateToCompare={() => setPage("compare")} onSaveSearch={saveSearch} />}
+      {page === "profile" && <ProfilePage freelancer={freelancersWithRatings.find(f => f.id === selectedFreelancerId)} reviews={reviews} onAddReview={addReview} onNavigate={navigate} onBack={() => { setPage("freelancers"); setSelectedFreelancerId(null); }} onMessage={async (freelancerId) => { const convId = await getOrCreateConversation(freelancerId); if (convId) { setSelectedConversationId(convId); setPage("messages"); } }} currentUser={currentUser} projects={projects} onSaveProfile={handleUpdateProfile} />}
+      {page === "messages" && <MessagesPage currentUser={currentUser} conversations={conversations} profiles={messageProfiles} freelancers={freelancersWithRatings} selectedConversationId={selectedConversationId} onSelectConversation={setSelectedConversationId} onSendMessage={sendMessage} onNavigate={navigate} />}
+      {page === "jobs" && <JobsPage jobs={jobs} loading={jobsLoading} currentUser={currentUser} onBid={handleBid} onAcceptBid={handleAcceptBid} onRejectBid={handleRejectBid} onNavigate={navigate} freelancers={freelancersWithRatings} onOpenMessage={async (otherId) => { const cid = await getOrCreateConversation(otherId); if (cid) { setSelectedConversationId(cid); setPage("messages"); } }} savedJobIds={savedJobIds} onToggleSaveJob={toggleSaveJob} recommendedJobs={recommendedJobs} getRecommendedFreelancers={getRecommendedFreelancersForJob} onSaveSearch={saveSearch} />}
+      {page === "saved" && <SavedPage savedJobIds={savedJobIds} savedFreelancerIds={savedFreelancerIds} jobs={jobs} freelancers={freelancersWithRatings} onNavigate={navigate} onViewProfile={viewProfile} onToggleSaveJob={toggleSaveJob} onToggleSaveFreelancer={toggleSaveFreelancer} savedSearches={savedSearches} onRemoveSavedSearch={removeSavedSearch} />}
       {page === "post-job" && <PostJobPage onPost={handlePostJob} onNavigate={navigate} />}
-      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancers} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} getInvoiceSummary={getInvoiceSummary} />}
+      {page === "projects" && <ProjectsPage projects={projects} freelancers={freelancersWithRatings} currentUser={currentUser} onCreate={handleCreateProject} onNavigate={navigate} onReleaseEscrow={releaseEscrow} disputes={disputes} onRaiseDispute={raiseDispute} onResolveDispute={resolveDispute} getInvoiceSummary={getInvoiceSummary} />}
       {page === "about" && <AboutPage onNavigate={navigate} />}
       {page === "shortcuts" && <ShortcutsPage onNavigate={navigate} />}
-      {page === "compare" && <ComparePage freelancers={freelancers} compareIds={compareFreelancerIds} onClear={() => setCompareFreelancerIds([])} onNavigate={navigate} onViewProfile={viewProfile} />}
+      {page === "compare" && <ComparePage freelancers={freelancersWithRatings} compareIds={compareFreelancerIds} onClear={() => setCompareFreelancerIds([])} onNavigate={navigate} onViewProfile={viewProfile} />}
     </>
   );
 }
@@ -2641,15 +2666,6 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
   const [reviewRating, setReviewRating] = useState(5);
   const [reviewComment, setReviewComment] = useState("");
   const freelancerReviews = (reviews || []).filter(r => r.freelancerId === freelancer?.id);
-  // Derive the displayed rating from the loaded reviews rather than trusting
-  // freelancer.rating (which can be stale relative to public.reviews). When
-  // there are no loaded reviews yet, fall back to the stored column so the
-  // profile doesn't flash "0" during load.
-  const displayCount = freelancerReviews.length;
-  const displayRating = displayCount > 0
-    ? Math.round((freelancerReviews.reduce((s, r) => s + (Number(r.rating) || 0), 0) / displayCount) * 10) / 10
-    : (Number(freelancer?.rating) || 0);
-  const displayReviewCount = displayCount > 0 ? displayCount : (Number(freelancer?.reviewCount) || 0);
   const hasWorkedWith = currentUser?.role === "client" && (projects || []).some(p => p.clientId === currentUser?.id && p.members?.includes(freelancer?.id));
   const hasReviewed = (reviews || []).some(r => r.freelancerId === freelancer?.id && r.clientId === currentUser?.id);
 
@@ -2823,7 +2839,7 @@ function ProfilePage({ freelancer, reviews = [], onAddReview, onNavigate, onBack
             </div>
             <p style={{ fontSize: 17, color: "var(--gray-600)", marginBottom: 12 }}>{freelancer.title}</p>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "center", fontSize: 14 }}>
-              <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--warning)" }}><Icons.Star /> {displayRating} ({displayReviewCount} reviews)</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--warning)" }}><Icons.Star /> {freelancer.rating} ({freelancer.reviewCount} reviews)</span>
               <span style={{ fontWeight: 700, color: "var(--gray-800)", fontFamily: "var(--font-mono)" }}>${freelancer.hourlyRate}/hr</span>
               {freelancer.location && <span style={{ display: "flex", alignItems: "center", gap: 4, color: "var(--gray-500)" }}><Icons.MapPin /> {freelancer.location}</span>}
               <span style={{ padding: "4px 10px", borderRadius: var_radius_full, fontSize: 12, fontWeight: 600, background: freelancer.status === "available" ? "var(--success-light)" : "var(--warning-light)", color: freelancer.status === "available" ? "var(--success)" : "var(--warning)" }}>{freelancer.status}</span>
