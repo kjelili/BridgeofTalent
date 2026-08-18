@@ -3,6 +3,8 @@ import { createServerSupabaseClient } from '@/lib/supabase';
 import { createEscrowPaymentIntent, releaseEscrowFunds } from '@/services/stripe';
 import { z } from 'zod';
 
+export const dynamic = 'force-dynamic';
+
 const fundSchema = z.object({
   projectId: z.string().uuid(),
   milestoneId: z.string().uuid(),

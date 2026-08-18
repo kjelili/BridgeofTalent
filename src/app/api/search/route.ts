@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { z } from 'zod';
 
+export const dynamic = 'force-dynamic';
+
 const searchSchema = z.object({
   q: z.string().max(200).optional(),
   type: z.enum(['jobs', 'freelancers']).default('jobs'),

@@ -28,10 +28,21 @@ export interface Database {
           last_active_at: string;
           referral_code: string;
           referred_by: string | null;
+          stripe_customer_id: string | null;
+          stripe_connect_id: string | null;
           created_at: string;
         };
-        Insert: Omit<Database['public']['Tables']['profiles']['Row'], 'created_at' | 'referral_code'>;
-        Update: Partial<Database['public']['Tables']['profiles']['Insert']>;
+        Insert: Partial<Database['public']['Tables']['profiles']['Row']>;
+        Update: Partial<Database['public']['Tables']['profiles']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'profiles_referred_by_fkey';
+            columns: ['referred_by'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       freelancers: {
         Row: {
@@ -58,6 +69,17 @@ export interface Database {
           embedding: number[] | null;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['freelancers']['Row']>;
+        Update: Partial<Database['public']['Tables']['freelancers']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'freelancers_id_fkey';
+            columns: ['id'];
+            isOneToOne: true;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       jobs: {
         Row: {
@@ -77,6 +99,37 @@ export interface Database {
           deadline: string | null;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['jobs']['Row']>;
+        Update: Partial<Database['public']['Tables']['jobs']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'jobs_client_id_fkey';
+            columns: ['client_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      job_embeddings: {
+        Row: {
+          id: string;
+          job_id: string;
+          embedding: number[] | null;
+          content: string;
+          created_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['job_embeddings']['Row']>;
+        Update: Partial<Database['public']['Tables']['job_embeddings']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'job_embeddings_job_id_fkey';
+            columns: ['job_id'];
+            isOneToOne: false;
+            referencedRelation: 'jobs';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       bids: {
         Row: {
@@ -90,6 +143,24 @@ export interface Database {
           status: 'pending' | 'accepted' | 'rejected';
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['bids']['Row']>;
+        Update: Partial<Database['public']['Tables']['bids']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'bids_job_id_fkey';
+            columns: ['job_id'];
+            isOneToOne: false;
+            referencedRelation: 'jobs';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'bids_freelancer_id_fkey';
+            columns: ['freelancer_id'];
+            isOneToOne: false;
+            referencedRelation: 'freelancers';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       projects: {
         Row: {
@@ -104,6 +175,44 @@ export interface Database {
           escrow_released: boolean;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['projects']['Row']>;
+        Update: Partial<Database['public']['Tables']['projects']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'projects_client_id_fkey';
+            columns: ['client_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      project_members: {
+        Row: {
+          id: string;
+          project_id: string;
+          freelancer_id: string;
+          role: string;
+          created_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['project_members']['Row']>;
+        Update: Partial<Database['public']['Tables']['project_members']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'project_members_project_id_fkey';
+            columns: ['project_id'];
+            isOneToOne: false;
+            referencedRelation: 'projects';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'project_members_freelancer_id_fkey';
+            columns: ['freelancer_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       reviews: {
         Row: {
@@ -115,6 +224,17 @@ export interface Database {
           comment: string;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['reviews']['Row']>;
+        Update: Partial<Database['public']['Tables']['reviews']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'reviews_freelancer_id_fkey';
+            columns: ['freelancer_id'];
+            isOneToOne: false;
+            referencedRelation: 'freelancers';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       escrow_accounts: {
         Row: {
@@ -129,6 +249,48 @@ export interface Database {
           created_at: string;
           released_at: string | null;
         };
+        Insert: Partial<Database['public']['Tables']['escrow_accounts']['Row']>;
+        Update: Partial<Database['public']['Tables']['escrow_accounts']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'escrow_accounts_project_id_fkey';
+            columns: ['project_id'];
+            isOneToOne: false;
+            referencedRelation: 'projects';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'escrow_accounts_client_id_fkey';
+            columns: ['client_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      transactions: {
+        Row: {
+          id: string;
+          escrow_id: string | null;
+          user_id: string;
+          type: string;
+          amount: number;
+          stripe_transaction_id: string;
+          description: string;
+          metadata: Json;
+          created_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['transactions']['Row']>;
+        Update: Partial<Database['public']['Tables']['transactions']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'transactions_escrow_id_fkey';
+            columns: ['escrow_id'];
+            isOneToOne: false;
+            referencedRelation: 'escrow_accounts';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       milestones: {
         Row: {
@@ -144,6 +306,17 @@ export interface Database {
           created_at: string;
           sort_order: number;
         };
+        Insert: Partial<Database['public']['Tables']['milestones']['Row']>;
+        Update: Partial<Database['public']['Tables']['milestones']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'milestones_project_id_fkey';
+            columns: ['project_id'];
+            isOneToOne: false;
+            referencedRelation: 'projects';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       match_scores: {
         Row: {
@@ -158,6 +331,47 @@ export interface Database {
           ai_reasoning: string;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['match_scores']['Row']>;
+        Update: Partial<Database['public']['Tables']['match_scores']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'match_scores_job_id_fkey';
+            columns: ['job_id'];
+            isOneToOne: false;
+            referencedRelation: 'jobs';
+            referencedColumns: ['id'];
+          },
+          {
+            foreignKeyName: 'match_scores_freelancer_id_fkey';
+            columns: ['freelancer_id'];
+            isOneToOne: false;
+            referencedRelation: 'freelancers';
+            referencedColumns: ['id'];
+          },
+        ];
+      };
+      subscriptions: {
+        Row: {
+          id: string;
+          user_id: string;
+          tier: 'free' | 'plus' | 'pro' | 'enterprise';
+          stripe_subscription_id: string;
+          stripe_customer_id: string | null;
+          status: string;
+          current_period_end: string | null;
+          created_at: string;
+        };
+        Insert: Partial<Database['public']['Tables']['subscriptions']['Row']>;
+        Update: Partial<Database['public']['Tables']['subscriptions']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'subscriptions_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       notifications: {
         Row: {
@@ -172,6 +386,17 @@ export interface Database {
           expires_at: string | null;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['notifications']['Row']>;
+        Update: Partial<Database['public']['Tables']['notifications']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'notifications_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       saved_searches: {
         Row: {
@@ -184,6 +409,17 @@ export interface Database {
           last_alert_sent_at: string | null;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['saved_searches']['Row']>;
+        Update: Partial<Database['public']['Tables']['saved_searches']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'saved_searches_user_id_fkey';
+            columns: ['user_id'];
+            isOneToOne: false;
+            referencedRelation: 'profiles';
+            referencedColumns: ['id'];
+          },
+        ];
       };
       disputes: {
         Row: {
@@ -198,14 +434,39 @@ export interface Database {
           resolved_at: string | null;
           created_at: string;
         };
+        Insert: Partial<Database['public']['Tables']['disputes']['Row']>;
+        Update: Partial<Database['public']['Tables']['disputes']['Row']>;
+        Relationships: [
+          {
+            foreignKeyName: 'disputes_project_id_fkey';
+            columns: ['project_id'];
+            isOneToOne: false;
+            referencedRelation: 'projects';
+            referencedColumns: ['id'];
+          },
+        ];
       };
+    };
+    Views: {
+      [_ in never]: never;
+    };
+    Functions: {
+      [_ in never]: never;
+    };
+    Enums: {
+      [_ in never]: never;
+    };
+    CompositeTypes: {
+      [_ in never]: never;
     };
   };
 }
 
-export type Tables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Row'];
-export type InsertTables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Insert'];
-export type UpdateTables<T extends keyof Database['public']['Tables']> = Database['public']['Tables'][T]['Update'];
+type PublicSchema = Database['public'];
+
+export type Tables<T extends keyof PublicSchema['Tables']> = PublicSchema['Tables'][T]['Row'];
+export type InsertTables<T extends keyof PublicSchema['Tables']> = PublicSchema['Tables'][T]['Insert'];
+export type UpdateTables<T extends keyof PublicSchema['Tables']> = PublicSchema['Tables'][T]['Update'];
 
 export type Profile = Tables<'profiles'>;
 export type Freelancer = Tables<'freelancers'>;

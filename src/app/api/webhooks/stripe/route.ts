@@ -3,13 +3,20 @@ import { headers } from 'next/headers';
 import Stripe from 'stripe';
 import { handleWebhookEvent } from '@/services/stripe';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2024-06-20',
-});
-
-const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET!;
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secretKey || !webhookSecret) {
+    console.error('Stripe webhook is not configured');
+    return NextResponse.json({ error: 'Webhook not configured' }, { status: 500 });
+  }
+
+  const stripe = new Stripe(secretKey, {
+    apiVersion: '2024-06-20',
+  });
+
   const payload = await req.text();
   const signature = headers().get('stripe-signature');
 

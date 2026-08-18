@@ -2,9 +2,19 @@ import OpenAI from 'openai';
 import { createAdminClient } from '@/lib/supabase';
 import { AIProposal, MatchResult } from '@/types';
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazily instantiate the OpenAI client. Constructing it at module scope would
+// throw during `next build` when OPENAI_API_KEY is not present in the build env.
+let openaiClient: OpenAI | null = null;
+function getOpenAI(): OpenAI {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error('Missing OPENAI_API_KEY');
+    }
+    openaiClient = new OpenAI({ apiKey });
+  }
+  return openaiClient;
+}
 
 const MODEL = 'gpt-4o-mini';
 
@@ -195,7 +205,7 @@ Respond in JSON format:
   "keyPoints": ["3-4 bullet points of key value propositions"]
 }`;
 
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAI().chat.completions.create({
     model: MODEL,
     messages: [
       { role: 'system', content: 'You are an expert freelance career coach and proposal writer.' },
@@ -223,7 +233,7 @@ Respond in JSON format:
  * Generate AI summary of a job description
  */
 export async function generateJobSummary(description: string): Promise<string> {
-  const response = await openai.chat.completions.create({
+  const response = await getOpenAI().chat.completions.create({
     model: MODEL,
     messages: [
       {
@@ -243,7 +253,7 @@ export async function generateJobSummary(description: string): Promise<string> {
  * Generate embedding for semantic search
  */
 export async function generateEmbedding(text: string): Promise<number[]> {
-  const response = await openai.embeddings.create({
+  const response = await getOpenAI().embeddings.create({
     model: 'text-embedding-3-small',
     input: text.slice(0, 8000),
   });

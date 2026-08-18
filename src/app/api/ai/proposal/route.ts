@@ -3,6 +3,8 @@ import { generateProposal } from '@/services/ai';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { z } from 'zod';
 
+export const dynamic = 'force-dynamic';
+
 const schema = z.object({ jobId: z.string().uuid() });
 
 export async function POST(req: NextRequest) {

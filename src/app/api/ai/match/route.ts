@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { generateMatchScores } from '@/services/ai';
 import { z } from 'zod';
 
+export const dynamic = 'force-dynamic';
+
 const schema = z.object({ jobId: z.string().uuid() });
 
 export async function POST(req: NextRequest) {

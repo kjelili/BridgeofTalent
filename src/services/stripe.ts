@@ -1,20 +1,32 @@
 import Stripe from 'stripe';
 import { createAdminClient } from '@/lib/supabase';
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!, {
-  apiVersion: '2024-06-20',
-  typescript: true,
-});
+// Lazily instantiate the Stripe client. Constructing it at module scope would
+// throw during `next build` when STRIPE_SECRET_KEY is not present in the build env.
+let stripeClient: Stripe | null = null;
+function getStripe(): Stripe {
+  if (!stripeClient) {
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new Error('Missing STRIPE_SECRET_KEY');
+    }
+    stripeClient = new Stripe(secretKey, {
+      apiVersion: '2024-06-20',
+      typescript: true,
+    });
+  }
+  return stripeClient;
+}
 
 const PLATFORM_FEE_PERCENT = 5; // BridgeofTalent flat 5%
 
-export { stripe };
+export { getStripe };
 
 /**
  * Create a Stripe Connect account for a freelancer
  */
 export async function createConnectAccount(userId: string, email: string, country: string = 'US') {
-  const account = await stripe.accounts.create({
+  const account = await getStripe().accounts.create({
     type: 'express',
     country,
     email,
@@ -39,7 +51,7 @@ export async function createConnectAccount(userId: string, email: string, countr
  * Create onboarding link for Connect account
  */
 export async function createAccountLink(accountId: string) {
-  return stripe.accountLinks.create({
+  return getStripe().accountLinks.create({
     account: accountId,
     refresh_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings/payments?refresh=true`,
     return_url: `${process.env.NEXT_PUBLIC_APP_URL}/settings/payments?success=true`,
@@ -66,7 +78,7 @@ export async function createEscrowPaymentIntent({
   const platformFee = Math.round(amount * (PLATFORM_FEE_PERCENT / 100) * 100); // in cents
   const freelancerAmount = Math.round(amount * 100) - platformFee;
 
-  const paymentIntent = await stripe.paymentIntents.create({
+  const paymentIntent = await getStripe().paymentIntents.create({
     amount: Math.round(amount * 100),
     currency,
     automatic_payment_methods: { enabled: true },
@@ -114,7 +126,7 @@ export async function releaseEscrowFunds({
   const freelancerPayout = transferAmount - platformFee;
 
   // Create transfer to freelancer
-  const transfer = await stripe.transfers.create({
+  const transfer = await getStripe().transfers.create({
     amount: freelancerPayout,
     currency: 'usd',
     destination: freelancerStripeAccountId,
@@ -162,7 +174,7 @@ export async function refundEscrow(escrowId: string, reason?: string) {
     throw new Error('Escrow not available for refund');
   }
 
-  const refund = await stripe.refunds.create({
+  const refund = await getStripe().refunds.create({
     payment_intent: escrow.stripe_payment_intent_id,
     reason: 'requested_by_customer',
     metadata: { escrowId, reason: reason || 'Dispute resolution' },
@@ -204,7 +216,7 @@ export async function createSubscription(
 
   if (!customerId) {
     const { data: user } = await supabase.auth.admin.getUserById(userId);
-    const customer = await stripe.customers.create({
+    const customer = await getStripe().customers.create({
       email: user.user?.email,
       metadata: { userId },
     });
@@ -213,12 +225,12 @@ export async function createSubscription(
   }
 
   // Attach payment method
-  await stripe.paymentMethods.attach(paymentMethodId, { customer: customerId });
-  await stripe.customers.update(customerId, {
+  await getStripe().paymentMethods.attach(paymentMethodId, { customer: customerId });
+  await getStripe().customers.update(customerId, {
     invoice_settings: { default_payment_method: paymentMethodId },
   });
 
-  const subscription = await stripe.subscriptions.create({
+  const subscription = await getStripe().subscriptions.create({
     customer: customerId,
     items: [{ price: priceId }],
     payment_behavior: 'default_incomplete',
