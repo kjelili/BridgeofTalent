@@ -1,8 +1,0 @@
-node_modules
-build
-coverage
-.git
-.github
-*.log
-.DS_Store
-.env*
