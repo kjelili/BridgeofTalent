@@ -43,15 +43,15 @@ export default function HomePage() {
             <a href="#pricing" className="hover:text-slate-900">Pricing</a>
           </nav>
           <div className="flex items-center gap-3">
-            <a href="#" className="hidden text-sm font-semibold text-slate-700 hover:text-slate-900 sm:block">
+            <Link href="/sign-in" className="hidden text-sm font-semibold text-slate-700 hover:text-slate-900 sm:block">
               Sign in
-            </a>
-            <a
-              href="#get-started"
+            </Link>
+            <Link
+              href="/sign-up"
               className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-brand-600"
             >
               Get started
-            </a>
+            </Link>
           </div>
         </div>
       </header>
@@ -75,18 +75,18 @@ export default function HomePage() {
             escrow, and turns hiring from weeks into minutes.
           </p>
           <div id="get-started" className="mt-10 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href="#"
+            <Link
+              href="/post-job"
               className="w-full rounded-lg bg-brand-500 px-6 py-3 text-base font-semibold text-white shadow-md transition hover:bg-brand-600 sm:w-auto"
             >
               Post a job
-            </a>
-            <a
-              href="#"
+            </Link>
+            <Link
+              href="/jobs"
               className="w-full rounded-lg border border-slate-200 bg-white px-6 py-3 text-base font-semibold text-slate-700 transition hover:border-slate-300 hover:bg-slate-50 sm:w-auto"
             >
               Find work
-            </a>
+            </Link>
           </div>
           <p className="mt-4 text-sm text-slate-500">No credit card required · Flat 5% platform fee</p>
         </div>
@@ -142,12 +142,12 @@ export default function HomePage() {
             Join BridgeofTalent today. Post a job for free and only pay a flat 5% when you hire.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href="#"
+            <Link
+              href="/sign-up"
               className="w-full rounded-lg bg-white px-6 py-3 text-base font-semibold text-brand-700 shadow-md transition hover:bg-brand-50 sm:w-auto"
             >
               Get started free
-            </a>
+            </Link>
             <a
               href="#features"
               className="w-full rounded-lg border border-white/30 px-6 py-3 text-base font-semibold text-white transition hover:bg-white/10 sm:w-auto"

@@ -16,17 +16,8 @@ function getPublicSupabaseConfig() {
   return { supabaseUrl, supabaseAnonKey };
 }
 
-// Browser client for Client Components
-export function createClient() {
-  const { supabaseUrl, supabaseAnonKey } = getPublicSupabaseConfig();
-  return createBrowserClient<Database>(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-  });
-}
+// NOTE: The browser client lives in `@/lib/supabase-browser` so that Client
+// Components never import this module (which pulls in `next/headers`).
 
 // Server client for Server Components / Server Actions
 export async function createServerSupabaseClient() {
