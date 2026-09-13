@@ -203,7 +203,7 @@ create table if not exists public.audit_logs (
 alter table public.notifications
   add column if not exists channel notification_channel default 'in_app',
   add column if not exists action_url text default '',
-  add column if not expires_at timestamptz;
+  add column if not exists expires_at timestamptz;
 
 -- ---- Saved Searches & Talent Pools -------------------------------------------
 create table if not exists public.saved_searches (
