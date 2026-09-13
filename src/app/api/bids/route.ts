@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { sanitizeBidInput } from '@/utils/security';
+import { rateLimit, clientIp } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,6 +21,9 @@ const actionSchema = z.object({
 // Freelancer submits a bid on a job.
 export async function POST(req: NextRequest) {
   try {
+    const { success } = await rateLimit(`bids:${clientIp(req)}`);
+    if (!success) return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+
     const supabase = await createServerSupabaseClient();
     const {
       data: { user },
@@ -67,6 +71,9 @@ export async function POST(req: NextRequest) {
 // Job owner accepts or rejects a bid.
 export async function PATCH(req: NextRequest) {
   try {
+    const { success } = await rateLimit(`bids:${clientIp(req)}`);
+    if (!success) return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+
     const supabase = await createServerSupabaseClient();
     const {
       data: { user },

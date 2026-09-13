@@ -56,6 +56,9 @@ export default async function DashboardPage() {
                 <Link href="/profile">
                   <Button variant="secondary">Edit profile</Button>
                 </Link>
+                <Link href="/settings/payments">
+                  <Button variant="secondary">Payouts</Button>
+                </Link>
               </>
             ) : (
               <Link href="/post-job">
@@ -121,6 +124,7 @@ async function ClientBoard({ userId }: { userId: string }) {
           ))}
         </div>
       )}
+      <ProjectsSection userId={userId} role="client" />
     </>
   );
 }
@@ -174,6 +178,58 @@ async function FreelancerBoard({ userId }: { userId: string }) {
           })}
         </div>
       )}
+      <ProjectsSection userId={userId} role="freelancer" />
+    </>
+  );
+}
+
+async function ProjectsSection({
+  userId,
+  role,
+}: {
+  userId: string;
+  role: 'client' | 'freelancer';
+}) {
+  const supabase = await createServerSupabaseClient();
+  let projects: Array<{ id: string; title: string; status: string; client_name: string }> = [];
+
+  if (role === 'client') {
+    const { data } = await supabase
+      .from('projects')
+      .select('id, title, status, client_name')
+      .eq('client_id', userId)
+      .order('created_at', { ascending: false });
+    projects = data || [];
+  } else {
+    const { data } = await supabase
+      .from('project_members')
+      .select('projects(id, title, status, client_name)')
+      .eq('freelancer_id', userId);
+    projects = ((data || [])
+      .map((r) => r.projects)
+      .filter(Boolean) as unknown) as typeof projects;
+  }
+
+  if (projects.length === 0) return null;
+
+  return (
+    <>
+      <h2 className="mb-4 mt-10 text-lg font-semibold text-slate-900">Your projects</h2>
+      <div className="space-y-4">
+        {projects.map((p) => (
+          <Link key={p.id} href={`/projects/${p.id}` as Route} className="block">
+            <Card className="transition hover:shadow-md">
+              <CardContent className="flex items-center justify-between gap-4 p-6">
+                <div>
+                  <h3 className="font-semibold text-slate-900">{p.title}</h3>
+                  <p className="mt-1 text-sm text-slate-500">Client: {p.client_name}</p>
+                </div>
+                <Badge variant={p.status === 'active' ? 'warning' : 'success'}>{p.status}</Badge>
+              </CardContent>
+            </Card>
+          </Link>
+        ))}
+      </div>
     </>
   );
 }

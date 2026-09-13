@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { sanitizeProfileInput } from '@/utils/security';
+import { rateLimit, clientIp } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,6 +18,9 @@ const schema = z.object({
 // Current freelancer updates their own public profile.
 export async function PATCH(req: NextRequest) {
   try {
+    const { success } = await rateLimit(`freelancer:${clientIp(req)}`);
+    if (!success) return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+
     const supabase = await createServerSupabaseClient();
     const {
       data: { user },

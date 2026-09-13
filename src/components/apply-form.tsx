@@ -15,6 +15,32 @@ export function ApplyForm({ jobId }: { jobId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [drafting, setDrafting] = useState(false);
+
+  async function generateDraft() {
+    setError(null);
+    setDrafting(true);
+    try {
+      const res = await fetch('/api/ai/proposal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jobId }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setError(json.error || 'Could not generate a draft right now.');
+        return;
+      }
+      const proposal = json.proposal || {};
+      if (proposal.body) setMessage(proposal.body);
+      if (proposal.suggestedRate && !amount) setAmount(String(proposal.suggestedRate));
+      if (proposal.estimatedDuration && !timeline) setTimeline(proposal.estimatedDuration);
+    } catch {
+      setError('Something went wrong generating the draft.');
+    } finally {
+      setDrafting(false);
+    }
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -80,7 +106,20 @@ export function ApplyForm({ jobId }: { jobId: string }) {
         </div>
       </div>
       <div>
-        <Label htmlFor="message">Cover message</Label>
+        <div className="mb-1.5 flex items-center justify-between">
+          <Label htmlFor="message" className="mb-0">
+            Cover message
+          </Label>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={generateDraft}
+            disabled={drafting}
+          >
+            {drafting ? 'Drafting…' : '✨ Draft with AI'}
+          </Button>
+        </div>
         <Textarea
           id="message"
           required

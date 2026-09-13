@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { generateProposal } from '@/services/ai';
 import { createServerSupabaseClient } from '@/lib/supabase';
+import { rateLimit, clientIp } from '@/lib/rate-limit';
 import { z } from 'zod';
 
 export const dynamic = 'force-dynamic';
@@ -9,6 +10,9 @@ const schema = z.object({ jobId: z.string().uuid() });
 
 export async function POST(req: NextRequest) {
   try {
+    const { success } = await rateLimit(`ai-proposal:${clientIp(req)}`);
+    if (!success) return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+
     const supabase = await createServerSupabaseClient();
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });

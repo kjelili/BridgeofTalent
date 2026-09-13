@@ -2,6 +2,7 @@ import { NextResponse, type NextRequest } from 'next/server';
 import { z } from 'zod';
 import { createServerSupabaseClient } from '@/lib/supabase';
 import { sanitizeJobInput } from '@/utils/security';
+import { rateLimit, clientIp } from '@/lib/rate-limit';
 
 export const dynamic = 'force-dynamic';
 
@@ -18,6 +19,9 @@ const jobSchema = z.object({
 
 export async function POST(req: NextRequest) {
   try {
+    const { success } = await rateLimit(`jobs:${clientIp(req)}`);
+    if (!success) return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+
     const supabase = await createServerSupabaseClient();
     const {
       data: { user },

@@ -130,7 +130,7 @@ export async function releaseEscrowFunds({
     amount: freelancerPayout,
     currency: 'usd',
     destination: freelancerStripeAccountId,
-    transfer_group: escrow.stripe_payment_intent_id,
+    transfer_group: escrow.stripe_payment_intent_id ?? undefined,
     metadata: { escrowId, type: 'freelancer_payout' },
   });
 
@@ -175,7 +175,7 @@ export async function refundEscrow(escrowId: string, reason?: string) {
   }
 
   const refund = await getStripe().refunds.create({
-    payment_intent: escrow.stripe_payment_intent_id,
+    payment_intent: escrow.stripe_payment_intent_id ?? undefined,
     reason: 'requested_by_customer',
     metadata: { escrowId, reason: reason || 'Dispute resolution' },
   });

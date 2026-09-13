@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { ApplyForm } from '@/components/apply-form';
 import { BidActions } from '@/components/bid-actions';
+import { MatchShortlist } from '@/components/match-shortlist';
 import { formatCurrency } from '@/lib/utils';
 
 export const dynamic = 'force-dynamic';
@@ -146,6 +147,15 @@ export default async function JobDetailPage({ params }: { params: { id: string }
                 Post your own job
               </Link>{' '}
               to start hiring.
+            </CardContent>
+          </Card>
+        )}
+
+        {isOwner && (
+          <Card className="mt-6">
+            <CardContent className="p-6">
+              <h2 className="mb-4 text-lg font-semibold text-slate-900">AI shortlist</h2>
+              <MatchShortlist jobId={job.id} />
             </CardContent>
           </Card>
         )}

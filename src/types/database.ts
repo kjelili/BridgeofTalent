@@ -244,8 +244,9 @@ export interface Database {
           total_amount: number;
           platform_fee: number;
           freelancer_payout: number;
-          stripe_payment_intent_id: string;
+          stripe_payment_intent_id: string | null;
           status: 'pending' | 'held' | 'released' | 'refunded' | 'disputed';
+          milestone_id: string | null;
           created_at: string;
           released_at: string | null;
         };
