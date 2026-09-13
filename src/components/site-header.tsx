@@ -14,6 +14,9 @@ export function SiteHeader() {
           <Link href="/jobs" className="hover:text-slate-900">
             Browse jobs
           </Link>
+          <Link href="/freelancers" className="hover:text-slate-900">
+            Find talent
+          </Link>
           <Link href="/post-job" className="hover:text-slate-900">
             Post a job
           </Link>
